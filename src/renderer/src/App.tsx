@@ -46,6 +46,7 @@ const CURRENT_DEVICE_ID = 'current-page';
 
 type LeftTab = 'slides' | 'blocks';
 type RightTab = 'style' | 'layers' | 'page';
+type CanvasFitMode = 'fit' | 'width';
 
 interface SelectedSummary {
   label: string;
@@ -248,6 +249,7 @@ export default function App() {
   const [codeCss, setCodeCss] = useState('');
   const [gridEnabled, setGridEnabled] = useState(true);
   const [draggedSlideId, setDraggedSlideId] = useState<string | null>(null);
+  const [canvasFitMode, setCanvasFitMode] = useState<CanvasFitMode>('fit');
 
   const editorHostRef = useRef<HTMLDivElement | null>(null);
   const editorShellRef = useRef<HTMLDivElement | null>(null);
@@ -258,6 +260,7 @@ export default function App() {
   const currentSlideIdRef = useRef(currentSlideId);
   const gridEnabledRef = useRef(gridEnabled);
   const zoomRef = useRef(zoom);
+  const canvasFitModeRef = useRef(canvasFitMode);
 
   useEffect(() => {
     slidesRef.current = slides;
@@ -274,6 +277,10 @@ export default function App() {
   useEffect(() => {
     gridEnabledRef.current = gridEnabled;
   }, [gridEnabled]);
+
+  useEffect(() => {
+    canvasFitModeRef.current = canvasFitMode;
+  }, [canvasFitMode]);
 
   useEffect(() => {
     zoomRef.current = zoom;
@@ -682,15 +689,21 @@ export default function App() {
     const availableWidth = Math.max(320, bounds.width - 140);
     const availableHeight = Math.max(240, bounds.height - 96);
     const fit =
-      normalized.presentationMode === 'scroll'
+      normalized.presentationMode === 'scroll' || canvasFitModeRef.current === 'width'
         ? Math.floor((availableWidth / width) * 100)
         : Math.floor(Math.min(availableWidth / width, availableHeight / height) * 100);
-    setZoom(Math.max(10, Math.min(160, fit)));
+    setZoom(Math.max(10, Math.min(220, fit)));
   }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(handleFitCanvas, 80);
     return () => window.clearTimeout(timer);
+  }, [canvasFitMode, currentSlideId, handleFitCanvas, slides.length]);
+
+  useEffect(() => {
+    const handleResize = () => handleFitCanvas();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
   }, [handleFitCanvas]);
 
   const handleSelectSlide = useCallback(
@@ -1143,6 +1156,28 @@ export default function App() {
                 <input checked={gridEnabled} type="checkbox" onChange={(event) => setGridEnabled(event.target.checked)} />
                 网格
               </label>
+              <button
+                className={canvasFitMode === 'width' ? 'is-active' : ''}
+                type="button"
+                title="铺满宽度"
+                onClick={() => {
+                  setCanvasFitMode('width');
+                  window.setTimeout(handleFitCanvas, 0);
+                }}
+              >
+                宽
+              </button>
+              <button
+                className={canvasFitMode === 'fit' ? 'is-active' : ''}
+                type="button"
+                title="适配整屏"
+                onClick={() => {
+                  setCanvasFitMode('fit');
+                  window.setTimeout(handleFitCanvas, 0);
+                }}
+              >
+                全
+              </button>
               <button type="button" title="缩小" onClick={() => setZoom((value) => Math.max(10, value - 10))}>
                 <ZoomOut size={16} />
               </button>
