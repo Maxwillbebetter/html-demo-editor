@@ -69,6 +69,7 @@ npm run dev
 
 ```bash
 npm run typecheck
+npm run test:smoke
 npm run build
 npm audit --omit=dev
 ```

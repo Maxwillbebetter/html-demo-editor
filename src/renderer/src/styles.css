@@ -278,11 +278,8 @@ button {
 }
 
 .slide-thumb iframe {
-  width: 1280px;
-  height: 720px;
   border: 0;
   pointer-events: none;
-  transform: scale(0.14375);
   transform-origin: top left;
 }
 
@@ -416,15 +413,17 @@ button {
 }
 
 .editor-shell {
+  position: relative;
   min-height: 0;
   padding: 14px;
+  overflow: hidden;
 }
 
 .editor-host {
   width: 100%;
   height: 100%;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
   border: 1px solid #cdd6df;
   border-radius: 8px;
   background: #dfe5eb;
@@ -443,6 +442,38 @@ button {
 
 .editor-host .gjs-frame-wrapper {
   background: transparent;
+}
+
+.canvas-resize-handle {
+  position: absolute;
+  right: 22px;
+  bottom: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 108px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 7px;
+  background: rgba(15, 118, 110, 0.94);
+  color: #ffffff;
+  cursor: nwse-resize;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.24);
+  z-index: 4;
+}
+
+.canvas-resize-handle::after {
+  content: "";
+  width: 9px;
+  height: 9px;
+  margin-left: 8px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+}
+
+.canvas-resize-handle span {
+  font-size: 12px;
+  line-height: 1;
 }
 
 .gjs-one-bg {
@@ -641,7 +672,8 @@ button {
   font-size: 13px;
 }
 
-.page-pane input {
+.page-pane input,
+.page-pane select {
   width: 100%;
   height: 34px;
   border: 1px solid #dce3ea;
@@ -651,9 +683,36 @@ button {
   color: #26313f;
 }
 
-.page-pane input:focus {
+.page-pane input:focus,
+.page-pane select:focus {
   outline: 0;
   border-color: #0f766e;
+}
+
+.page-control-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.preset-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.preset-actions button {
+  height: 32px;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #3c4858;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px #dce3ea;
+}
+
+.preset-actions button:hover {
+  color: #0f766e;
+  box-shadow: inset 0 0 0 1px #9ccdc6;
 }
 
 .page-facts {

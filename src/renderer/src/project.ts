@@ -1,8 +1,13 @@
+export type PresentationMode = 'fit' | 'scroll';
+
 export interface SlideModel {
   id: string;
   name: string;
   components: string;
   css: string;
+  canvasWidth: number;
+  canvasHeight: number;
+  presentationMode: PresentationMode;
 }
 
 export interface ProjectMeta {
@@ -12,6 +17,8 @@ export interface ProjectMeta {
   sourceName?: string;
   headExtras: string;
   bodyScripts: string;
+  bodyAttributes?: Record<string, string>;
+  documentMode?: boolean;
 }
 
 export interface ParsedProject {
@@ -19,26 +26,37 @@ export interface ParsedProject {
   slides: SlideModel[];
 }
 
+export const DEFAULT_CANVAS_WIDTH = 1280;
+export const DEFAULT_CANVAS_HEIGHT = 720;
+export const DEFAULT_SCROLL_CANVAS_WIDTH = 1440;
+export const DEFAULT_SCROLL_CANVAS_HEIGHT = 1600;
+
 export const CANVAS_BASE_CSS = `
+html {
+  min-height: 100%;
+}
 body {
   margin: 0;
-  background: #e7ebef;
-  color: #1c2430;
-  font-family: Inter, "Segoe UI", Arial, sans-serif;
+  min-height: 100%;
 }
 .deck-slide {
   box-sizing: border-box;
-  width: 1280px;
-  height: 720px;
-  min-height: 720px;
+  width: var(--htmlppt-slide-width, ${DEFAULT_CANVAS_WIDTH}px);
+  min-height: var(--htmlppt-slide-height, ${DEFAULT_CANVAS_HEIGHT}px);
   position: relative;
-  overflow: hidden;
   margin: 0 auto;
   background: #ffffff;
-  color: #1c2430;
 }
 .deck-slide * {
   box-sizing: border-box;
+}
+.deck-slide[data-presentation-mode="fit"] {
+  height: var(--htmlppt-slide-height, ${DEFAULT_CANVAS_HEIGHT}px);
+  overflow: hidden;
+}
+.deck-slide[data-presentation-mode="scroll"] {
+  height: auto;
+  overflow: visible;
 }
 `;
 
@@ -51,38 +69,55 @@ body {
   width: 100%;
   height: 100%;
   margin: 0;
-  overflow: hidden;
   background: #111111;
 }
-.htmlppt-deck {
-  position: fixed;
-  inset: 0;
-  overflow: hidden;
+body.htmlppt-deck {
   background: #111111;
 }
-.htmlppt-deck .deck-slide {
+body.htmlppt-deck.is-fit-mode {
+  overflow: hidden;
+}
+body.htmlppt-deck.is-scroll-mode {
+  height: auto;
+  min-height: 100%;
+  overflow: auto;
+}
+body.htmlppt-deck > .deck-slide {
   box-sizing: border-box;
-  width: 1280px;
-  height: 720px;
-  min-height: 720px;
-  position: absolute;
-  left: 50%;
-  top: 50%;
+  display: none;
+  width: var(--htmlppt-slide-width, ${DEFAULT_CANVAS_WIDTH}px);
+  min-height: var(--htmlppt-slide-height, ${DEFAULT_CANVAS_HEIGHT}px);
   margin: 0;
-  overflow: hidden;
-  transform: translate(-50%, -50%) scale(var(--deck-scale));
-  transform-origin: center center;
   background: #ffffff;
   opacity: 0;
   pointer-events: none;
   visibility: hidden;
 }
-.htmlppt-deck .deck-slide.is-active {
+body.htmlppt-deck > .deck-slide.is-active {
+  display: block;
   opacity: 1;
   pointer-events: auto;
   visibility: visible;
 }
-.htmlppt-deck .deck-slide * {
+body.htmlppt-deck.is-fit-mode > .deck-slide.is-active {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  height: var(--htmlppt-slide-height, ${DEFAULT_CANVAS_HEIGHT}px);
+  overflow: hidden;
+  transform: translate(-50%, -50%) scale(var(--deck-scale));
+  transform-origin: center center;
+}
+body.htmlppt-deck.is-scroll-mode > .deck-slide.is-active {
+  position: relative;
+  left: 50%;
+  top: 0;
+  height: auto;
+  overflow: visible;
+  transform: translateX(-50%) scale(var(--deck-scale));
+  transform-origin: top center;
+}
+body.htmlppt-deck > .deck-slide * {
   box-sizing: border-box;
 }
 .presenter-hud {
@@ -263,6 +298,64 @@ function escapeAttr(value: string): string {
   return escapeHtml(value).replaceAll('"', '&quot;');
 }
 
+function baseDirToFileHref(baseDir?: string): string | null {
+  if (!baseDir) return null;
+  const normalized = baseDir.replace(/\\/g, '/');
+  const withSlash = normalized.endsWith('/') ? normalized : `${normalized}/`;
+  if (/^[a-zA-Z]:\//.test(withSlash)) return `file:///${encodeURI(withSlash)}`;
+  if (withSlash.startsWith('/')) return `file://${encodeURI(withSlash)}`;
+  return null;
+}
+
+function clampCanvasSize(value: number | undefined, fallback: number): number {
+  if (!value || !Number.isFinite(value)) return fallback;
+  return Math.max(320, Math.min(12000, Math.round(value)));
+}
+
+export function normalizeSlide(slide: SlideModel): SlideModel {
+  return {
+    ...slide,
+    canvasWidth: clampCanvasSize(slide.canvasWidth, DEFAULT_CANVAS_WIDTH),
+    canvasHeight: clampCanvasSize(slide.canvasHeight, DEFAULT_CANVAS_HEIGHT),
+    presentationMode: slide.presentationMode || 'fit'
+  };
+}
+
+export function getSlideCanvasWidth(slide: SlideModel): number {
+  return clampCanvasSize(slide.canvasWidth, DEFAULT_CANVAS_WIDTH);
+}
+
+export function getSlideCanvasHeight(slide: SlideModel): number {
+  return clampCanvasSize(slide.canvasHeight, DEFAULT_CANVAS_HEIGHT);
+}
+
+function styleVarsForSlide(slide: SlideModel): string {
+  return `--htmlppt-slide-width:${getSlideCanvasWidth(slide)}px;--htmlppt-slide-height:${getSlideCanvasHeight(slide)}px;`;
+}
+
+function mergeStyleVars(existingStyle: string | null, vars: string): string {
+  const cleaned = (existingStyle || '')
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => !part.startsWith('--htmlppt-slide-width') && !part.startsWith('--htmlppt-slide-height'))
+    .join(';');
+
+  return cleaned ? `${vars}${cleaned};` : vars;
+}
+
+function applySlideAttributes(element: HTMLElement, slide: SlideModel, index: number): void {
+  const normalized = normalizeSlide(slide);
+  element.classList.add('deck-slide');
+  element.classList.remove('is-active');
+  element.setAttribute('data-slide-id', normalized.id);
+  element.setAttribute('aria-label', normalized.name || `页面 ${index + 1}`);
+  element.setAttribute('data-canvas-width', String(normalized.canvasWidth));
+  element.setAttribute('data-canvas-height', String(normalized.canvasHeight));
+  element.setAttribute('data-presentation-mode', normalized.presentationMode);
+  element.setAttribute('style', mergeStyleVars(element.getAttribute('style'), styleVarsForSlide(normalized)));
+}
+
 function removeRuntimeNodes(root: ParentNode): void {
   root.querySelectorAll('[data-htmlppt-runtime], .presenter-hud, .presenter-blank').forEach((node) => node.remove());
 }
@@ -295,6 +388,77 @@ function collectScripts(doc: Document): string {
     .join('\n');
 }
 
+function collectAttributes(element: Element): Record<string, string> {
+  return Array.from(element.attributes).reduce<Record<string, string>>((attributes, attr) => {
+    if (attr.name.startsWith('data-htmlppt-')) return attributes;
+    attributes[attr.name] = attr.value;
+    return attributes;
+  }, {});
+}
+
+function serializeAttributes(attributes: Record<string, string> | undefined, extraClass = ''): string {
+  if (!attributes && !extraClass) return '';
+  const merged = { ...(attributes ?? {}) };
+  const classes = [merged.class, extraClass].filter(Boolean).join(' ').trim();
+  if (classes) merged.class = Array.from(new Set(classes.split(/\s+/))).join(' ');
+
+  return Object.entries(merged)
+    .filter(([name]) => name.toLowerCase() !== 'data-htmlppt-runtime')
+    .map(([name, value]) => `${name}="${escapeAttr(value)}"`)
+    .join(' ');
+}
+
+function parsePixelDimension(value: string | null | undefined): number | undefined {
+  if (!value) return undefined;
+  const match = value.match(/(-?\d+(?:\.\d+)?)px/i);
+  if (!match) return undefined;
+  return Number(match[1]);
+}
+
+function dimensionFromInlineStyle(element: HTMLElement, property: 'width' | 'height' | 'min-height'): number | undefined {
+  return parsePixelDimension(element.style.getPropertyValue(property));
+}
+
+function dimensionFromCss(css: string, element: HTMLElement, property: 'width' | 'height' | 'min-height'): number | undefined {
+  const selectors = [
+    element.id ? `#${element.id}` : '',
+    ...Array.from(element.classList).map((className) => `.${className}`),
+    element.tagName.toLowerCase()
+  ].filter(Boolean);
+
+  for (const selector of selectors) {
+    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const ruleRegex = new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`, 'gi');
+    let match: RegExpExecArray | null;
+    while ((match = ruleRegex.exec(css))) {
+      const declarationRegex = new RegExp(`${property}\\s*:\\s*([^;]+)`, 'i');
+      const declaration = match[1].match(declarationRegex);
+      const parsed = parsePixelDimension(declaration?.[1]);
+      if (parsed) return parsed;
+    }
+  }
+
+  return undefined;
+}
+
+function inferDimensions(element: HTMLElement, sharedCss: string, mode: PresentationMode) {
+  const width =
+    dimensionFromInlineStyle(element, 'width') ||
+    dimensionFromCss(sharedCss, element, 'width') ||
+    (mode === 'scroll' ? DEFAULT_SCROLL_CANVAS_WIDTH : DEFAULT_CANVAS_WIDTH);
+  const height =
+    dimensionFromInlineStyle(element, 'height') ||
+    dimensionFromInlineStyle(element, 'min-height') ||
+    dimensionFromCss(sharedCss, element, 'height') ||
+    dimensionFromCss(sharedCss, element, 'min-height') ||
+    (mode === 'scroll' ? DEFAULT_SCROLL_CANVAS_HEIGHT : DEFAULT_CANVAS_HEIGHT);
+
+  return {
+    width: clampCanvasSize(width, mode === 'scroll' ? DEFAULT_SCROLL_CANVAS_WIDTH : DEFAULT_CANVAS_WIDTH),
+    height: clampCanvasSize(height, mode === 'scroll' ? DEFAULT_SCROLL_CANVAS_HEIGHT : DEFAULT_CANVAS_HEIGHT)
+  };
+}
+
 function firstNonEmptySelector(doc: Document, selectors: string[]): Element[] {
   for (const selector of selectors) {
     const matches = Array.from(doc.querySelectorAll(selector));
@@ -314,31 +478,36 @@ function getSlideCandidates(doc: Document): Element[] {
 
   if (directMatches.length > 0) return directMatches;
 
-  const bodySections = Array.from(doc.body.children).filter((node) => node.tagName.toLowerCase() === 'section');
-  return bodySections.length > 1 ? bodySections : [];
+  return [];
 }
 
 function normalizeSlideNode(node: Element, index: number, sharedCss: string): SlideModel {
   const clone = node.cloneNode(true) as HTMLElement;
   removeRuntimeNodes(clone);
   removeScripts(clone);
-  clone.classList.remove('is-active');
-  clone.classList.add('deck-slide');
 
   const id = clone.getAttribute('data-slide-id') || uid();
   const name =
     clone.getAttribute('aria-label') ||
     clone.querySelector('h1,h2,h3')?.textContent?.trim() ||
     `页面 ${index + 1}`;
-
-  clone.setAttribute('data-slide-id', id);
-  clone.setAttribute('aria-label', name);
-
-  return {
+  const mode: PresentationMode = clone.getAttribute('data-presentation-mode') === 'scroll' ? 'scroll' : 'fit';
+  const inferred = inferDimensions(clone, sharedCss, mode);
+  const slide: SlideModel = {
     id,
     name,
+    components: '',
+    css: sharedCss,
+    canvasWidth: inferred.width,
+    canvasHeight: inferred.height,
+    presentationMode: mode
+  };
+
+  applySlideAttributes(clone, slide, index);
+
+  return {
+    ...slide,
     components: clone.outerHTML,
-    css: sharedCss
   };
 }
 
@@ -349,11 +518,28 @@ function normalizeBodyAsSingleSlide(doc: Document, sharedCss: string): SlideMode
 
   const id = uid();
   const name = doc.querySelector('h1,h2,h3')?.textContent?.trim() || '页面 1';
-  return {
+  const rootChildren = Array.from(bodyClone.children).filter((child) => !child.hasAttribute('data-htmlppt-runtime'));
+  const root =
+    rootChildren.length === 1
+      ? (rootChildren[0].cloneNode(true) as HTMLElement)
+      : Object.assign(doc.createElement('section'), { innerHTML: bodyClone.innerHTML });
+  if (rootChildren.length !== 1) root.setAttribute('data-htmlppt-synthetic-root', 'true');
+  const inferred = inferDimensions(root, sharedCss, 'scroll');
+  const slide: SlideModel = {
     id,
     name,
-    components: `<section class="deck-slide" data-slide-id="${id}" aria-label="${escapeAttr(name)}">${bodyClone.innerHTML}</section>`,
-    css: sharedCss
+    components: '',
+    css: sharedCss,
+    canvasWidth: inferred.width,
+    canvasHeight: inferred.height,
+    presentationMode: 'scroll'
+  };
+
+  applySlideAttributes(root, slide, 0);
+
+  return {
+    ...slide,
+    components: root.outerHTML
   };
 }
 
@@ -362,6 +548,9 @@ export function createBlankSlide(name = '新页面'): SlideModel {
   return {
     id,
     name,
+    canvasWidth: DEFAULT_CANVAS_WIDTH,
+    canvasHeight: DEFAULT_CANVAS_HEIGHT,
+    presentationMode: 'fit',
     components: `<section class="deck-slide" data-slide-id="${id}" aria-label="${escapeAttr(name)}">
   <h1 class="slide-heading">${escapeHtml(name)}</h1>
   <div class="two-col-text">
@@ -382,12 +571,16 @@ export function createDefaultProject(): ParsedProject {
     meta: {
       title: '未命名 HTML 演示材料',
       headExtras: '',
-      bodyScripts: ''
+      bodyScripts: '',
+      documentMode: false
     },
     slides: [
       {
         id: coverId,
         name: '封面',
+        canvasWidth: DEFAULT_CANVAS_WIDTH,
+        canvasHeight: DEFAULT_CANVAS_HEIGHT,
+        presentationMode: 'fit',
         components: `<section class="deck-slide" data-slide-id="${coverId}" aria-label="封面">
   <div class="cover-kicker">HTML DEMO MATERIAL</div>
   <h1 class="cover-title">像 PPT 一样编辑 HTML 演示页</h1>
@@ -402,6 +595,9 @@ export function createDefaultProject(): ParsedProject {
       {
         id: metricsId,
         name: '核心指标',
+        canvasWidth: DEFAULT_CANVAS_WIDTH,
+        canvasHeight: DEFAULT_CANVAS_HEIGHT,
+        presentationMode: 'fit',
         components: `<section class="deck-slide" data-slide-id="${metricsId}" aria-label="核心指标">
   <h2 class="slide-heading">第一版 MVP 目标</h2>
   <div class="metric-grid">
@@ -415,6 +611,9 @@ export function createDefaultProject(): ParsedProject {
       {
         id: planId,
         name: '说明页',
+        canvasWidth: DEFAULT_CANVAS_WIDTH,
+        canvasHeight: DEFAULT_CANVAS_HEIGHT,
+        presentationMode: 'fit',
         components: `<section class="deck-slide" data-slide-id="${planId}" aria-label="说明页">
   <h2 class="slide-heading">开始编辑</h2>
   <div class="two-col-text">
@@ -433,12 +632,13 @@ export function parseHtmlProject(rawHtml: string, sourceName?: string, filePath?
   removeRuntimeNodes(doc);
 
   const title = doc.title?.trim() || sourceName?.replace(/\.(html|htm)$/i, '') || '导入的 HTML 演示材料';
-  const sharedCss = `${CANVAS_BASE_CSS}\n${collectStyles(doc)}`;
+  const sharedCss = collectStyles(doc);
   const candidates = getSlideCandidates(doc);
   const slides =
     candidates.length > 0
       ? candidates.map((candidate, index) => normalizeSlideNode(candidate, index, sharedCss))
       : [normalizeBodyAsSingleSlide(doc, sharedCss)];
+  const documentMode = candidates.length === 0;
 
   return {
     meta: {
@@ -447,28 +647,29 @@ export function parseHtmlProject(rawHtml: string, sourceName?: string, filePath?
       baseDir,
       sourceName,
       headExtras: collectHeadExtras(doc),
-      bodyScripts: collectScripts(doc)
+      bodyScripts: collectScripts(doc),
+      bodyAttributes: collectAttributes(doc.body),
+      documentMode
     },
     slides
   };
 }
 
 export function ensureDeckSlideMarkup(components: string, slide: SlideModel, index: number): string {
+  const normalized = normalizeSlide(slide);
   const doc = new DOMParser().parseFromString(components, 'text/html');
   const existing = doc.querySelector('.deck-slide') as HTMLElement | null;
 
   if (existing) {
     removeRuntimeNodes(existing);
-    existing.classList.remove('is-active');
-    existing.classList.add('deck-slide');
-    existing.setAttribute('data-slide-id', slide.id);
-    existing.setAttribute('aria-label', slide.name || `页面 ${index + 1}`);
+    applySlideAttributes(existing, normalized, index);
     return existing.outerHTML;
   }
 
-  return `<section class="deck-slide" data-slide-id="${escapeAttr(slide.id)}" aria-label="${escapeAttr(
-    slide.name || `页面 ${index + 1}`
-  )}">${components}</section>`;
+  const wrapper = doc.createElement('section');
+  wrapper.innerHTML = components;
+  applySlideAttributes(wrapper, normalized, index);
+  return wrapper.outerHTML;
 }
 
 function uniqueCss(cssItems: string[]): string {
@@ -484,25 +685,118 @@ function uniqueCss(cssItems: string[]): string {
     .join('\n\n');
 }
 
+function cleanDocumentStyle(style: string | null): string {
+  const cleaned = (style || '')
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => !part.startsWith('--htmlppt-slide-width') && !part.startsWith('--htmlppt-slide-height'))
+    .join('; ');
+  return cleaned ? `${cleaned};` : '';
+}
+
+function cleanDocumentMarkup(components: string): string {
+  const doc = new DOMParser().parseFromString(components, 'text/html');
+  removeRuntimeNodes(doc);
+  const root = (doc.querySelector('.deck-slide') || doc.body.firstElementChild) as HTMLElement | null;
+  if (!root) return doc.body.innerHTML;
+
+  const isSyntheticRoot = root.getAttribute('data-htmlppt-synthetic-root') === 'true';
+  root.classList.remove('deck-slide', 'is-active');
+  root.removeAttribute('data-slide-id');
+  root.removeAttribute('data-canvas-width');
+  root.removeAttribute('data-canvas-height');
+  root.removeAttribute('data-presentation-mode');
+  root.removeAttribute('data-htmlppt-synthetic-root');
+
+  if (root.classList.length === 0) root.removeAttribute('class');
+
+  const cleanedStyle = cleanDocumentStyle(root.getAttribute('style'));
+  if (cleanedStyle) root.setAttribute('style', cleanedStyle);
+  else root.removeAttribute('style');
+
+  return isSyntheticRoot ? root.innerHTML : root.outerHTML;
+}
+
+function buildDocumentHtml(slides: SlideModel[], meta: ProjectMeta): string {
+  const firstSlide = normalizeSlide(slides[0] ?? createBlankSlide('页面 1'));
+  const body = cleanDocumentMarkup(firstSlide.components);
+  const css = uniqueCss([firstSlide.css]);
+  const bodyAttrs = serializeAttributes(meta.bodyAttributes);
+
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="generator" content="HTML Demo Editor">
+  <title>${escapeHtml(meta.title || 'HTML 文档')}</title>
+  ${meta.headExtras || ''}
+  <style>
+${css}
+  </style>
+</head>
+<body ${bodyAttrs}>
+${body}
+  ${meta.bodyScripts || ''}
+</body>
+</html>`;
+}
+
 function presenterRuntime(): string {
   return `<script data-htmlppt-runtime>
 (() => {
-  const slides = Array.from(document.querySelectorAll('.htmlppt-deck .deck-slide'));
+  const deck = document.body;
+  const slides = Array.from(document.querySelectorAll('body.htmlppt-deck > .deck-slide'));
   const counter = document.querySelector('[data-page-counter]');
   const blank = document.querySelector('[data-presenter-blank]');
   let index = 0;
 
+  function slideSize(slide) {
+    return {
+      width: Number(slide.dataset.canvasWidth) || ${DEFAULT_CANVAS_WIDTH},
+      height: Number(slide.dataset.canvasHeight) || ${DEFAULT_CANVAS_HEIGHT}
+    };
+  }
+
+  function currentMode() {
+    return slides[index]?.dataset.presentationMode === 'scroll' ? 'scroll' : 'fit';
+  }
+
+  function setDeckMode() {
+    const mode = currentMode();
+    deck.classList.remove('is-fit-mode', 'is-scroll-mode');
+    deck.classList.add(mode === 'scroll' ? 'is-scroll-mode' : 'is-fit-mode');
+    deck.style.overflow = mode === 'scroll' ? 'auto' : 'hidden';
+    deck.style.height = mode === 'scroll' ? 'auto' : '100%';
+  }
+
   function resize() {
-    const scale = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
+    const slide = slides[index];
+    if (!slide) return;
+    const mode = currentMode();
+    const size = slideSize(slide);
+    const scale = mode === 'scroll'
+      ? window.innerWidth / size.width
+      : Math.min(window.innerWidth / size.width, window.innerHeight / size.height);
     document.documentElement.style.setProperty('--deck-scale', String(scale));
+    if (mode === 'scroll') {
+      const extra = Math.max(0, slide.scrollHeight * (scale - 1));
+      slide.style.marginBottom = extra ? String(extra) + 'px' : '';
+    } else {
+      slide.style.marginBottom = '';
+    }
   }
 
   function show(nextIndex) {
     if (!slides.length) return;
     index = Math.max(0, Math.min(slides.length - 1, nextIndex));
+    setDeckMode();
     slides.forEach((slide, slideIndex) => slide.classList.toggle('is-active', slideIndex === index));
     if (counter) counter.textContent = String(index + 1) + ' / ' + String(slides.length);
     location.hash = '#/' + String(index + 1);
+    window.scrollTo(0, 0);
+    resize();
   }
 
   function clearBlank() {
@@ -522,6 +816,22 @@ function presenterRuntime(): string {
   window.addEventListener('resize', resize);
   window.addEventListener('keydown', (event) => {
     const key = event.key.toLowerCase();
+    const mode = currentMode();
+    if (mode === 'scroll' && ['arrowdown', 'pagedown', ' '].includes(key)) {
+      event.preventDefault();
+      clearBlank();
+      const atBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4;
+      if (atBottom) show(index + 1);
+      else window.scrollBy({ top: Math.max(240, window.innerHeight * 0.82), behavior: 'smooth' });
+      return;
+    }
+    if (mode === 'scroll' && ['arrowup', 'pageup'].includes(key)) {
+      event.preventDefault();
+      clearBlank();
+      if (window.scrollY <= 4) show(index - 1);
+      else window.scrollBy({ top: -Math.max(240, window.innerHeight * 0.82), behavior: 'smooth' });
+      return;
+    }
     if (['arrowright', 'pagedown', ' '].includes(key)) {
       event.preventDefault();
       clearBlank();
@@ -543,15 +853,18 @@ function presenterRuntime(): string {
   });
 
   const hashMatch = location.hash.match(/#\\/(\\d+)/);
-  resize();
   show(hashMatch ? Number(hashMatch[1]) - 1 : 0);
 })();
 </script>`;
 }
 
 export function buildExportHtml(slides: SlideModel[], meta: ProjectMeta): string {
-  const body = slides.map((slide, index) => ensureDeckSlideMarkup(slide.components, slide, index)).join('\n');
-  const css = uniqueCss([EXPORT_BASE_CSS, ...slides.map((slide) => slide.css)]);
+  if (meta.documentMode) return buildDocumentHtml(slides, meta);
+
+  const normalizedSlides = slides.map(normalizeSlide);
+  const body = normalizedSlides.map((slide, index) => ensureDeckSlideMarkup(slide.components, slide, index)).join('\n');
+  const css = uniqueCss([EXPORT_BASE_CSS, ...normalizedSlides.map((slide) => slide.css)]);
+  const bodyAttrs = serializeAttributes(meta.bodyAttributes, 'htmlppt-deck is-fit-mode');
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -565,14 +878,12 @@ export function buildExportHtml(slides: SlideModel[], meta: ProjectMeta): string
 ${css}
   </style>
 </head>
-<body>
-  <main class="htmlppt-deck" aria-label="${escapeAttr(meta.title || 'HTML 演示材料')}">
+<body ${bodyAttrs} aria-label="${escapeAttr(meta.title || 'HTML 演示材料')}">
 ${body}
-  </main>
   <div class="presenter-blank" data-presenter-blank></div>
   <div class="presenter-hud" data-htmlppt-runtime>
     <button type="button" data-prev-slide aria-label="上一页">‹</button>
-    <span data-page-counter>1 / ${slides.length}</span>
+    <span data-page-counter>1 / ${normalizedSlides.length}</span>
     <button type="button" data-next-slide aria-label="下一页">›</button>
   </div>
   ${meta.bodyScripts || ''}
@@ -581,20 +892,27 @@ ${body}
 </html>`;
 }
 
-export function buildSlidePreviewDoc(slide: SlideModel): string {
-  const markup = ensureDeckSlideMarkup(slide.components, slide, 0);
+export function buildSlidePreviewDoc(slide: SlideModel, meta?: ProjectMeta): string {
+  const normalized = normalizeSlide(slide);
+  const markup = ensureDeckSlideMarkup(normalized.components, normalized, 0);
+  const width = getSlideCanvasWidth(normalized);
+  const height = getSlideCanvasHeight(normalized);
+  const bodyAttrs = serializeAttributes(meta?.bodyAttributes);
+  const baseHref = baseDirToFileHref(meta?.baseDir);
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
+  ${baseHref ? `<base href="${escapeAttr(baseHref)}">` : ''}
+  ${meta?.headExtras || ''}
   <style>
     ${CANVAS_BASE_CSS}
-    ${slide.css}
-    html, body { width: 1280px; height: 720px; overflow: hidden; background: #ffffff; }
+    ${normalized.css}
+    html, body { width: ${width}px; height: ${height}px; overflow: hidden; background: #ffffff; }
     .deck-slide { margin: 0; }
   </style>
 </head>
-<body>${markup}</body>
+<body ${bodyAttrs}>${markup}</body>
 </html>`;
 }
 

@@ -26,14 +26,23 @@ import { registerEditorBlocks, STYLE_SECTORS } from './editorBlocks';
 import {
   buildExportHtml,
   buildSlidePreviewDoc,
-  CANVAS_BASE_CSS,
   createBlankSlide,
   createDefaultProject,
+  DEFAULT_CANVAS_HEIGHT,
+  DEFAULT_CANVAS_WIDTH,
+  DEFAULT_SCROLL_CANVAS_HEIGHT,
+  DEFAULT_SCROLL_CANVAS_WIDTH,
   formatLooseHtml,
+  getSlideCanvasHeight,
+  getSlideCanvasWidth,
+  normalizeSlide,
   parseHtmlProject,
+  type PresentationMode,
   type ProjectMeta,
   type SlideModel
 } from './project';
+
+const CURRENT_DEVICE_ID = 'current-page';
 
 type LeftTab = 'slides' | 'blocks';
 type RightTab = 'style' | 'layers' | 'page';
@@ -65,6 +74,28 @@ function dirnameFromPath(filePath?: string): string | undefined {
 function safeDefaultName(title: string): string {
   const cleaned = title.replace(/[\\/:*?"<>|]/g, '-').trim();
   return `${cleaned || 'demo-material'}.html`;
+}
+
+function baseDirToFileHref(baseDir?: string): string | null {
+  if (!baseDir) return null;
+  const normalized = baseDir.replace(/\\/g, '/');
+  const withSlash = normalized.endsWith('/') ? normalized : `${normalized}/`;
+  if (/^[a-zA-Z]:\//.test(withSlash)) return `file:///${encodeURI(withSlash)}`;
+  if (withSlash.startsWith('/')) return `file://${encodeURI(withSlash)}`;
+  return null;
+}
+
+function clampCanvasInput(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(320, Math.min(12000, Math.round(value)));
+}
+
+function presentationModeLabel(mode: PresentationMode): string {
+  return mode === 'scroll' ? '滚动长页' : '适配演示';
+}
+
+function projectModeLabel(documentMode?: boolean): string {
+  return documentMode ? '大 HTML 文档' : '分页演示';
 }
 
 function makeSlideId(): string {
@@ -254,29 +285,128 @@ export default function App() {
     const doc = editor?.Canvas.getDocument();
     if (!doc) return;
 
+    doc.querySelectorAll('[data-html-demo-editor-managed="head"]').forEach((node) => node.remove());
+    doc.documentElement.classList.toggle('html-demo-editor-grid', gridEnabledRef.current);
+
+    const baseHref = baseDirToFileHref(metaRef.current.baseDir);
+    if (baseHref) {
+      const base = doc.createElement('base');
+      base.href = baseHref;
+      base.setAttribute('data-html-demo-editor-managed', 'head');
+      doc.head.insertBefore(base, doc.head.firstChild);
+    }
+
     let helperStyle = doc.getElementById('html-demo-editor-canvas-style') as HTMLStyleElement | null;
     if (!helperStyle) {
       helperStyle = doc.createElement('style');
       helperStyle.id = 'html-demo-editor-canvas-style';
-      doc.head.appendChild(helperStyle);
+      helperStyle.setAttribute('data-html-demo-editor-managed', 'head');
+      doc.head.insertBefore(helperStyle, baseHref ? doc.head.children[1] || null : doc.head.firstChild);
     }
 
     helperStyle.textContent = `
+      html {
+        min-height: 100%;
+      }
+      body {
+        margin: 0;
+        min-height: 100%;
+      }
       .deck-slide {
+        box-sizing: border-box;
+        width: var(--htmlppt-slide-width, ${DEFAULT_CANVAS_WIDTH}px);
+        min-height: var(--htmlppt-slide-height, ${DEFAULT_CANVAS_HEIGHT}px);
+        position: relative;
+        margin: 0 auto;
         outline: 1px solid rgba(41, 52, 66, 0.16);
         box-shadow: 0 26px 60px rgba(30, 41, 59, 0.14);
       }
-      ${
-        gridEnabledRef.current
-          ? `.deck-slide {
-              background-image:
-                linear-gradient(rgba(15, 118, 110, 0.08) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(15, 118, 110, 0.08) 1px, transparent 1px);
-              background-size: 24px 24px;
-            }`
-          : ''
+      .deck-slide,
+      .deck-slide * {
+        box-sizing: border-box;
+      }
+      .deck-slide[data-presentation-mode="fit"] {
+        height: var(--htmlppt-slide-height, ${DEFAULT_CANVAS_HEIGHT}px);
+        overflow: hidden;
+      }
+      .deck-slide[data-presentation-mode="scroll"] {
+        min-height: var(--htmlppt-slide-height, ${DEFAULT_SCROLL_CANVAS_HEIGHT}px);
+        height: auto;
+        overflow: visible;
+      }
+      html.html-demo-editor-grid body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 2147483647;
+        background-image:
+          linear-gradient(rgba(15, 118, 110, 0.13) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(15, 118, 110, 0.13) 1px, transparent 1px);
+        background-size: 24px 24px;
       }
     `;
+
+    const headTemplate = doc.createElement('template');
+    headTemplate.innerHTML = metaRef.current.headExtras || '';
+    Array.from(headTemplate.content.children).forEach((node) => {
+      const tag = node.tagName.toLowerCase();
+      if (['script', 'title', 'base'].includes(tag)) return;
+      const clone = node.cloneNode(true) as HTMLElement;
+      clone.setAttribute('data-html-demo-editor-managed', 'head');
+      doc.head.appendChild(clone);
+    });
+
+    const previousClasses = (doc.body.getAttribute('data-html-demo-editor-managed-body-classes') || '').split(/\s+/).filter(Boolean);
+    previousClasses.forEach((className) => doc.body.classList.remove(className));
+    const previousAttrs = (doc.body.getAttribute('data-html-demo-editor-managed-body-attrs') || '').split(/\s+/).filter(Boolean);
+    previousAttrs.forEach((name) => doc.body.removeAttribute(name));
+
+    const bodyAttributes = metaRef.current.bodyAttributes || {};
+    const managedClasses: string[] = [];
+    const managedAttrs: string[] = [];
+    Object.entries(bodyAttributes).forEach(([name, value]) => {
+      if (name.toLowerCase() === 'class') {
+        value
+          .split(/\s+/)
+          .filter(Boolean)
+          .forEach((className) => {
+            doc.body.classList.add(className);
+            managedClasses.push(className);
+          });
+        return;
+      }
+      doc.body.setAttribute(name, value);
+      managedAttrs.push(name);
+    });
+    doc.body.setAttribute('data-html-demo-editor-managed-body-classes', managedClasses.join(' '));
+    doc.body.setAttribute('data-html-demo-editor-managed-body-attrs', managedAttrs.join(' '));
+  }, []);
+
+  const updateCanvasDevice = useCallback((slide: SlideModel) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const normalized = normalizeSlide(slide);
+    const width = `${getSlideCanvasWidth(normalized)}px`;
+    const height = `${getSlideCanvasHeight(normalized)}px`;
+    const deviceManager = editor.Devices;
+    let device = deviceManager.get(CURRENT_DEVICE_ID);
+    if (!device) {
+      device = deviceManager.add({
+        id: CURRENT_DEVICE_ID,
+        name: '当前页面',
+        width,
+        height,
+        widthMedia: width
+      });
+    } else {
+      device.set({
+        width,
+        height,
+        widthMedia: width
+      });
+    }
+    editor.setDevice(CURRENT_DEVICE_ID);
   }, []);
 
   const loadSlideIntoEditor = useCallback(
@@ -284,9 +414,11 @@ export default function App() {
       const editor = editorRef.current;
       if (!editor) return;
 
+      const normalized = normalizeSlide(slide);
       loadingSlideRef.current = true;
-      editor.setComponents(slide.components);
-      editor.setStyle(`${CANVAS_BASE_CSS}\n${slide.css}`);
+      updateCanvasDevice(normalized);
+      editor.setComponents(normalized.components);
+      editor.setStyle(normalized.css);
       editor.Canvas.setZoom(zoomRef.current);
       (editor as unknown as { setDragMode?: (mode: string) => void }).setDragMode?.('absolute');
       setSelectedSummary(null);
@@ -296,7 +428,7 @@ export default function App() {
         loadingSlideRef.current = false;
       }, 0);
     },
-    [syncCanvasHelpers]
+    [syncCanvasHelpers, updateCanvasDevice]
   );
 
   const commitCurrentSlide = useCallback(() => {
@@ -321,12 +453,13 @@ export default function App() {
 
   const replaceProject = useCallback(
     (nextMeta: ProjectMeta, nextSlides: SlideModel[]) => {
-      const firstSlide = nextSlides[0] ?? createBlankSlide('页面 1');
+      const normalizedSlides = (nextSlides.length ? nextSlides : [createBlankSlide('页面 1')]).map(normalizeSlide);
+      const firstSlide = normalizedSlides[0];
       setMeta(nextMeta);
-      setSlides(nextSlides.length ? nextSlides : [firstSlide]);
+      setSlides(normalizedSlides);
       setCurrentSlideId(firstSlide.id);
       setDirty(false);
-      slidesRef.current = nextSlides.length ? nextSlides : [firstSlide];
+      slidesRef.current = normalizedSlides;
       metaRef.current = nextMeta;
       currentSlideIdRef.current = firstSlide.id;
       loadSlideIntoEditor(firstSlide);
@@ -358,14 +491,14 @@ export default function App() {
         scrollableCanvas: true
       },
       deviceManager: {
-        default: 'slide-16-9',
+        default: CURRENT_DEVICE_ID,
         devices: [
           {
-            id: 'slide-16-9',
-            name: '16:9 Slide',
-            width: '1280px',
-            height: '720px',
-            widthMedia: '1280px'
+            id: CURRENT_DEVICE_ID,
+            name: '当前页面',
+            width: `${DEFAULT_CANVAS_WIDTH}px`,
+            height: `${DEFAULT_CANVAS_HEIGHT}px`,
+            widthMedia: `${DEFAULT_CANVAS_WIDTH}px`
           }
         ]
       },
@@ -541,9 +674,18 @@ export default function App() {
   const handleFitCanvas = useCallback(() => {
     const shell = editorShellRef.current;
     if (!shell) return;
+    const current = slidesRef.current.find((slide) => slide.id === currentSlideIdRef.current) ?? slidesRef.current[0];
+    const normalized = current ? normalizeSlide(current) : createBlankSlide();
     const bounds = shell.getBoundingClientRect();
-    const fit = Math.floor(Math.min((bounds.width - 220) / 1280, (bounds.height - 100) / 720) * 100);
-    setZoom(Math.max(35, Math.min(100, fit)));
+    const width = getSlideCanvasWidth(normalized);
+    const height = getSlideCanvasHeight(normalized);
+    const availableWidth = Math.max(320, bounds.width - 140);
+    const availableHeight = Math.max(240, bounds.height - 96);
+    const fit =
+      normalized.presentationMode === 'scroll'
+        ? Math.floor((availableWidth / width) * 100)
+        : Math.floor(Math.min(availableWidth / width, availableHeight / height) * 100);
+    setZoom(Math.max(10, Math.min(160, fit)));
   }, []);
 
   useEffect(() => {
@@ -570,6 +712,8 @@ export default function App() {
     const next = [...updated, slide];
     setSlides(next);
     slidesRef.current = next;
+    setMeta((current) => ({ ...current, documentMode: false }));
+    metaRef.current = { ...metaRef.current, documentMode: false };
     setCurrentSlideId(slide.id);
     currentSlideIdRef.current = slide.id;
     setDirty(true);
@@ -724,7 +868,7 @@ export default function App() {
     if (!editor) return;
     loadingSlideRef.current = true;
     editor.setComponents(codeHtml);
-    editor.setStyle(`${CANVAS_BASE_CSS}\n${codeCss}`);
+    editor.setStyle(codeCss);
     window.setTimeout(() => {
       loadingSlideRef.current = false;
       syncCanvasHelpers();
@@ -736,6 +880,123 @@ export default function App() {
 
   const currentSlideIndex = slides.findIndex((slide) => slide.id === currentSlideId);
   const selectedSlide = slides[currentSlideIndex] ?? slides[0];
+
+  const applyCurrentSlideCanvasPatch = useCallback(
+    (patch: Partial<Pick<SlideModel, 'canvasWidth' | 'canvasHeight' | 'presentationMode'>>, reload = false) => {
+      const currentId = currentSlideIdRef.current;
+      const source = slidesRef.current.find((slide) => slide.id === currentId);
+      if (!source) return;
+
+      const target = normalizeSlide({
+        ...source,
+        ...patch,
+        canvasWidth: clampCanvasInput(patch.canvasWidth ?? source.canvasWidth, DEFAULT_CANVAS_WIDTH),
+        canvasHeight: clampCanvasInput(patch.canvasHeight ?? source.canvasHeight, DEFAULT_CANVAS_HEIGHT),
+        presentationMode: patch.presentationMode ?? source.presentationMode
+      });
+      const next = slidesRef.current.map((slide) => (slide.id === currentId ? target : slide));
+      slidesRef.current = next;
+      setSlides(next);
+      setDirty(true);
+
+      if (reload) {
+        loadSlideIntoEditor(target);
+        return;
+      }
+
+      updateCanvasDevice(target);
+      const editor = editorRef.current;
+      const root = editor?.getWrapper()?.find('.deck-slide')[0];
+      root?.addAttributes({
+        'data-canvas-width': String(target.canvasWidth),
+        'data-canvas-height': String(target.canvasHeight),
+        'data-presentation-mode': target.presentationMode
+      });
+      root?.addStyle({
+        '--htmlppt-slide-width': `${target.canvasWidth}px`,
+        '--htmlppt-slide-height': `${target.canvasHeight}px`
+      });
+    },
+    [loadSlideIntoEditor, updateCanvasDevice]
+  );
+
+  const updateCurrentSlideSettings = useCallback(
+    (patch: Partial<Pick<SlideModel, 'canvasWidth' | 'canvasHeight' | 'presentationMode'>>) => {
+      const updated = commitCurrentSlide();
+      const currentId = currentSlideIdRef.current;
+      const next = updated.map((slide) => {
+        if (slide.id !== currentId) return slide;
+        return normalizeSlide({
+          ...slide,
+          ...patch,
+          canvasWidth: clampCanvasInput(patch.canvasWidth ?? slide.canvasWidth, DEFAULT_CANVAS_WIDTH),
+          canvasHeight: clampCanvasInput(patch.canvasHeight ?? slide.canvasHeight, DEFAULT_CANVAS_HEIGHT),
+          presentationMode: patch.presentationMode ?? slide.presentationMode
+        });
+      });
+      const target = next.find((slide) => slide.id === currentId);
+      setSlides(next);
+      slidesRef.current = next;
+      setDirty(true);
+      if (target) loadSlideIntoEditor(target);
+    },
+    [commitCurrentSlide, loadSlideIntoEditor]
+  );
+
+  const handleCanvasResizeStart = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      const source = slidesRef.current.find((slide) => slide.id === currentSlideIdRef.current);
+      if (!source) return;
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const startWidth = getSlideCanvasWidth(source);
+      const startHeight = getSlideCanvasHeight(source);
+      const scale = Math.max(0.1, zoomRef.current / 100);
+
+      const handleMove = (moveEvent: MouseEvent) => {
+        const nextWidth = clampCanvasInput(startWidth + (moveEvent.clientX - startX) / scale, DEFAULT_CANVAS_WIDTH);
+        const nextHeight = clampCanvasInput(startHeight + (moveEvent.clientY - startY) / scale, DEFAULT_CANVAS_HEIGHT);
+        applyCurrentSlideCanvasPatch({ canvasWidth: nextWidth, canvasHeight: nextHeight }, false);
+      };
+
+      const handleUp = () => {
+        window.removeEventListener('mousemove', handleMove);
+        window.removeEventListener('mouseup', handleUp);
+      };
+
+      window.addEventListener('mousemove', handleMove);
+      window.addEventListener('mouseup', handleUp);
+    },
+    [applyCurrentSlideCanvasPatch]
+  );
+
+  const applyPagePreset = useCallback(
+    (preset: 'slide' | 'wide' | 'scroll') => {
+      if (preset === 'slide') {
+        updateCurrentSlideSettings({
+          canvasWidth: DEFAULT_CANVAS_WIDTH,
+          canvasHeight: DEFAULT_CANVAS_HEIGHT,
+          presentationMode: 'fit'
+        });
+      }
+      if (preset === 'wide') {
+        updateCurrentSlideSettings({
+          canvasWidth: 1920,
+          canvasHeight: 1080,
+          presentationMode: 'fit'
+        });
+      }
+      if (preset === 'scroll') {
+        updateCurrentSlideSettings({
+          canvasWidth: DEFAULT_SCROLL_CANVAS_WIDTH,
+          canvasHeight: DEFAULT_SCROLL_CANVAS_HEIGHT,
+          presentationMode: 'scroll'
+        });
+      }
+    },
+    [updateCurrentSlideSettings]
+  );
 
   return (
     <div className="app-shell">
@@ -818,7 +1079,16 @@ export default function App() {
                 >
                   <div className="slide-number">{index + 1}</div>
                   <div className="slide-thumb">
-                    <iframe title={slide.name} srcDoc={buildSlidePreviewDoc(slide)} sandbox="" />
+                    <iframe
+                      title={slide.name}
+                      srcDoc={buildSlidePreviewDoc(slide, meta)}
+                      sandbox=""
+                      style={{
+                        width: `${getSlideCanvasWidth(slide)}px`,
+                        height: `${getSlideCanvasHeight(slide)}px`,
+                        transform: `scale(${Math.min(184 / getSlideCanvasWidth(slide), 110 / getSlideCanvasHeight(slide))})`
+                      }}
+                    />
                   </div>
                   <input
                     value={slide.name}
@@ -862,18 +1132,22 @@ export default function App() {
           <div className="canvas-toolbar">
             <div>
               <strong>{selectedSlide?.name || '页面'}</strong>
-              <span>16:9 · {currentSlideIndex + 1 || 1}/{slides.length}</span>
+              <span>
+                {projectModeLabel(meta.documentMode)} ·{' '}
+                {selectedSlide ? `${getSlideCanvasWidth(selectedSlide)}×${getSlideCanvasHeight(selectedSlide)} · ${presentationModeLabel(selectedSlide.presentationMode)}` : '页面'} ·{' '}
+                {currentSlideIndex + 1 || 1}/{slides.length}
+              </span>
             </div>
             <div className="canvas-tools">
               <label className="toggle-row">
                 <input checked={gridEnabled} type="checkbox" onChange={(event) => setGridEnabled(event.target.checked)} />
                 网格
               </label>
-              <button type="button" title="缩小" onClick={() => setZoom((value) => Math.max(35, value - 10))}>
+              <button type="button" title="缩小" onClick={() => setZoom((value) => Math.max(10, value - 10))}>
                 <ZoomOut size={16} />
               </button>
               <span className="zoom-value">{zoom}%</span>
-              <button type="button" title="放大" onClick={() => setZoom((value) => Math.min(140, value + 10))}>
+              <button type="button" title="放大" onClick={() => setZoom((value) => Math.min(200, value + 10))}>
                 <ZoomIn size={16} />
               </button>
               <button type="button" title="适配画布" onClick={handleFitCanvas}>
@@ -883,6 +1157,14 @@ export default function App() {
           </div>
           <div ref={editorShellRef} className="editor-shell">
             <div ref={editorHostRef} className="editor-host" />
+            <button
+              className="canvas-resize-handle"
+              type="button"
+              title="拖拽调整画布大小"
+              onMouseDown={handleCanvasResizeStart}
+            >
+              <span>{selectedSlide ? `${getSlideCanvasWidth(selectedSlide)} × ${getSlideCanvasHeight(selectedSlide)}` : '画布'}</span>
+            </button>
           </div>
         </section>
 
@@ -1001,16 +1283,85 @@ export default function App() {
               <input value={meta.title} onChange={(event) => setMeta((current) => ({ ...current, title: event.target.value }))} />
             </label>
             <label>
-              当前页面
+              项目模式
+              <select
+                value={meta.documentMode ? 'document' : 'slides'}
+                onChange={(event) => {
+                  setMeta((current) => ({
+                    ...current,
+                    documentMode: event.target.value === 'document'
+                  }));
+                  setDirty(true);
+                }}
+              >
+                <option value="document">大 HTML 文档，可滚动</option>
+                <option value="slides">分页演示，按页切换</option>
+              </select>
+            </label>
+            <label>
+              {meta.documentMode ? '文档名称' : '当前页面'}
               <input
                 value={selectedSlide?.name || ''}
                 onChange={(event) => selectedSlide && handleRenameSlide(selectedSlide.id, event.target.value)}
               />
             </label>
+            <div className="page-control-grid">
+              <label>
+                画布宽
+                <input
+                  type="number"
+                  min={320}
+                  max={12000}
+                  value={selectedSlide ? getSlideCanvasWidth(selectedSlide) : DEFAULT_CANVAS_WIDTH}
+                  onChange={(event) => updateCurrentSlideSettings({ canvasWidth: Number(event.target.value) })}
+                />
+              </label>
+              <label>
+                画布高
+                <input
+                  type="number"
+                  min={320}
+                  max={12000}
+                  value={selectedSlide ? getSlideCanvasHeight(selectedSlide) : DEFAULT_CANVAS_HEIGHT}
+                  onChange={(event) => updateCurrentSlideSettings({ canvasHeight: Number(event.target.value) })}
+                />
+              </label>
+            </div>
+            <label>
+              演示方式
+              <select
+                value={selectedSlide?.presentationMode || 'fit'}
+                onChange={(event) => updateCurrentSlideSettings({ presentationMode: event.target.value as PresentationMode })}
+              >
+                <option value="fit">适配整页</option>
+                <option value="scroll">宽度填充，可滚动</option>
+              </select>
+            </label>
+            <div className="preset-actions" aria-label="画布预设">
+              <button type="button" onClick={() => applyPagePreset('slide')}>
+                16:9
+              </button>
+              <button type="button" onClick={() => applyPagePreset('wide')}>
+                1920×1080
+              </button>
+              <button type="button" onClick={() => applyPagePreset('scroll')}>
+                长页
+              </button>
+            </div>
             <div className="page-facts">
               <div>
                 <span>画布</span>
-                <strong>1280 × 720</strong>
+                <strong>
+                  {selectedSlide ? `${getSlideCanvasWidth(selectedSlide)} × ${getSlideCanvasHeight(selectedSlide)}` : '尚未选择'}
+                </strong>
+              </div>
+              <div>
+                <span>演示</span>
+                <strong>{meta.documentMode ? '原生滚动网页' : selectedSlide ? presentationModeLabel(selectedSlide.presentationMode) : '-'}</strong>
+              </div>
+              <div>
+                <span>模式</span>
+                <strong>{projectModeLabel(meta.documentMode)}</strong>
               </div>
               <div>
                 <span>路径</span>
@@ -1027,7 +1378,9 @@ export default function App() {
 
       <footer className="statusbar">
         <span>{dirty ? '有未保存修改' : '已同步'}</span>
-        <span>HTML/CSS · 16:9 · 本地文件</span>
+        <span>
+          HTML/CSS · {selectedSlide ? `${getSlideCanvasWidth(selectedSlide)}×${getSlideCanvasHeight(selectedSlide)}` : '页面'} · 本地文件
+        </span>
       </footer>
 
       <div id="hidden-gjs-panel" hidden />

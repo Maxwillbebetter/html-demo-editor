@@ -26,6 +26,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Smoke test import/export
+        run: npm run test:smoke
+
       - name: Build Windows app
         run: npm run dist:win
 
