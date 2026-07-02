@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>长页报告测试</title>
+  <style>
+    body {
+      margin: 0;
+      color: #1f2937;
+      background: #ffffff;
+      font-family: "Segoe UI", Arial, sans-serif;
+    }
+    .report {
+      width: 1440px;
+      min-height: 2400px;
+      margin: 0 auto;
+      padding: 96px 120px;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fafc 52%, #eef7f4 100%);
+    }
+    section {
+      min-height: 460px;
+      border-top: 1px solid #d8dee6;
+      padding: 56px 0;
+    }
+    h1 {
+      margin: 0 0 22px;
+      font-size: 64px;
+    }
+    h2 {
+      margin: 0 0 18px;
+      font-size: 38px;
+    }
+    p {
+      max-width: 840px;
+      font-size: 22px;
+      line-height: 1.6;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+      margin-top: 34px;
+    }
+    .metric {
+      min-height: 180px;
+      padding: 28px;
+      background: #ffffff;
+      border: 1px solid #dde5ec;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+  <article class="report">
+    <section>
+      <h1>长页 HTML 报告测试</h1>
+      <p>这个文件包含多个普通 section，但它们不是 slide。导入时应该保持为一个可滚动的大 HTML 文档。</p>
+    </section>
+    <section>
+      <h2>数据指标</h2>
+      <div class="grid">
+        <div class="metric">指标 A<br><strong>128%</strong></div>
+        <div class="metric">指标 B<br><strong>76%</strong></div>
+        <div class="metric">指标 C<br><strong>42%</strong></div>
+      </div>
+    </section>
+    <section>
+      <h2>方法论</h2>
+      <p>页面向下滚动时应保持连续阅读，不应被 720px 高度裁切。</p>
+    </section>
+    <section>
+      <h2>结论</h2>
+      <p>导出后仍然应该是一个普通 HTML 文件，不额外注入翻页 HUD。</p>
+    </section>
+  </article>
+</body>
+</html>

@@ -916,6 +916,46 @@ export function buildSlidePreviewDoc(slide: SlideModel, meta?: ProjectMeta): str
 </html>`;
 }
 
+function addAssetPath(paths: Set<string>, value: string | null | undefined): void {
+  if (!value) return;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith('#')) return;
+  if (/^(https?:|data:|blob:|mailto:|tel:|javascript:)/i.test(trimmed)) return;
+  const withoutHash = trimmed.split('#')[0];
+  const withoutQuery = withoutHash.split('?')[0];
+  if (!withoutQuery || withoutQuery.startsWith('#')) return;
+  paths.add(withoutQuery);
+}
+
+function collectCssAssetPaths(paths: Set<string>, css: string): void {
+  const urlRegex = /url\(\s*(['"]?)([^'")]+)\1\s*\)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = urlRegex.exec(css))) {
+    addAssetPath(paths, match[2]);
+  }
+}
+
+export function collectReferencedAssetPaths(html: string): string[] {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const paths = new Set<string>();
+
+  doc.querySelectorAll('[src], [href], [poster]').forEach((element) => {
+    addAssetPath(paths, element.getAttribute('src'));
+    addAssetPath(paths, element.getAttribute('href'));
+    addAssetPath(paths, element.getAttribute('poster'));
+  });
+
+  doc.querySelectorAll('[srcset]').forEach((element) => {
+    const srcset = element.getAttribute('srcset') || '';
+    srcset.split(',').forEach((candidate) => addAssetPath(paths, candidate.trim().split(/\s+/)[0]));
+  });
+
+  doc.querySelectorAll('style').forEach((style) => collectCssAssetPaths(paths, style.textContent || ''));
+  doc.querySelectorAll('[style]').forEach((element) => collectCssAssetPaths(paths, element.getAttribute('style') || ''));
+
+  return Array.from(paths);
+}
+
 export function formatLooseHtml(input: string): string {
   return input
     .replace(/>\s+</g, '>\n<')

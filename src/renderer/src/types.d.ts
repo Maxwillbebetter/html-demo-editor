@@ -27,11 +27,14 @@ export interface SavePayload {
   filePath?: string;
   html: string;
   defaultName?: string;
+  sourceBaseDir?: string;
+  assetPaths?: string[];
 }
 
 export interface ExportPayload {
   html: string;
   sourceBaseDir?: string;
+  assetPaths?: string[];
 }
 
 export interface DesktopBridge {

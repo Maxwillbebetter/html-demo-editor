@@ -14,6 +14,9 @@ const bundlePath = join(tempDir, 'bundle.js');
 const htmlPath = join(tempDir, 'runner.html');
 const mainPath = join(tempDir, 'main.cjs');
 
+const shortFixture = await readFile(join(root, 'fixtures/qa/short-card.html'), 'utf8');
+const longFixture = await readFile(join(root, 'fixtures/qa/long-report.html'), 'utf8');
+const interactiveFixture = await readFile(join(root, 'fixtures/qa/interactive/index.html'), 'utf8');
 const fixture = String.raw`<!doctype html>
 <html>
 <head>
@@ -37,30 +40,65 @@ const fixture = String.raw`<!doctype html>
 await writeFile(
   entryPath,
   `
-import { buildExportHtml, buildSlidePreviewDoc, parseHtmlProject } from ${JSON.stringify(projectModulePath)};
+import { buildExportHtml, buildSlidePreviewDoc, collectReferencedAssetPaths, parseHtmlProject } from ${JSON.stringify(projectModulePath)};
 
 const fixture = ${JSON.stringify(fixture)};
+const shortFixture = ${JSON.stringify(shortFixture)};
+const longFixture = ${JSON.stringify(longFixture)};
+const interactiveFixture = ${JSON.stringify(interactiveFixture)};
+const explicitSlidesFixture = '<!doctype html><html><head><title>Slides</title><style>.page{width:1280px;height:720px}</style></head><body><section data-slide class="page"><h1>One</h1></section><section data-slide class="page"><h1>Two</h1></section></body></html>';
 const parsed = parseHtmlProject(fixture, 'index.html', '/tmp/ai-report/index.html', '/tmp/ai-report');
 const slide = parsed.slides[0];
 const exported = buildExportHtml(parsed.slides, parsed.meta);
 const preview = buildSlidePreviewDoc(slide, parsed.meta);
 const failures = [];
 
-if (parsed.slides.length !== 1) failures.push('expected a single imported page');
-if (parsed.meta.documentMode !== true) failures.push('plain imported HTML should default to document mode');
-if (slide.presentationMode !== 'scroll') failures.push('single imported HTML should default to scroll mode');
-if (slide.canvasHeight < 1600) failures.push('scroll page should keep a tall editable canvas');
+function assert(condition, message) {
+  if (!condition) failures.push(message);
+}
+
+assert(parsed.slides.length === 1, 'expected a single imported page');
+assert(parsed.meta.documentMode === true, 'plain imported HTML should default to document mode');
+assert(slide.presentationMode === 'scroll', 'single imported HTML should default to scroll mode');
+assert(slide.canvasHeight >= 1600, 'scroll page should keep a tall editable canvas');
 if (!/^<div[^>]*class="wrap\\s+deck-slide|^<div[^>]*class="deck-slide\\s+wrap/.test(slide.components)) {
   failures.push('single root .wrap should remain the page root, not be nested inside a forced section');
 }
-if (!parsed.meta.headExtras.includes('stylesheet')) failures.push('external stylesheet link should be preserved');
-if (!parsed.meta.bodyScripts.includes('scriptLoaded')) failures.push('body scripts should be preserved for preview/export');
-if (!exported.includes('body class="original-body"')) failures.push('body class should be preserved in document export');
-if (exported.includes('htmlppt-deck')) failures.push('document export should not add deck runtime classes');
-if (exported.includes('<main')) failures.push('document export should not wrap pages in a main that breaks body > .wrap selectors');
-if (exported.includes('data-presentation-mode=')) failures.push('document export should strip editor-only slide attributes');
-if (!/<div[^>]*class="wrap"[^>]*>/.test(exported)) failures.push('document export should restore the original root element class');
-if (!preview.includes('<base href="file:///tmp/ai-report/">')) failures.push('srcDoc preview should include a base href for relative assets');
+assert(parsed.meta.headExtras.includes('stylesheet'), 'external stylesheet link should be preserved');
+assert(parsed.meta.bodyScripts.includes('scriptLoaded'), 'body scripts should be preserved for preview/export');
+assert(exported.includes('body class="original-body"'), 'body class should be preserved in document export');
+assert(!exported.includes('htmlppt-deck'), 'document export should not add deck runtime classes');
+assert(!exported.includes('<main'), 'document export should not wrap pages in a main that breaks body > .wrap selectors');
+assert(!exported.includes('data-presentation-mode='), 'document export should strip editor-only slide attributes');
+assert(/<div[^>]*class="wrap"[^>]*>/.test(exported), 'document export should restore the original root element class');
+assert(preview.includes('<base href="file:///tmp/ai-report/">'), 'srcDoc preview should include a base href for relative assets');
+
+const shortParsed = parseHtmlProject(shortFixture, 'short-card.html', '/tmp/qa/short-card.html', '/tmp/qa');
+assert(shortParsed.meta.documentMode === true && shortParsed.slides.length === 1, 'short HTML should import as one document page');
+assert(!buildExportHtml(shortParsed.slides, shortParsed.meta).includes('htmlppt-deck'), 'short document export should not include deck runtime');
+
+const longParsed = parseHtmlProject(longFixture, 'long-report.html', '/tmp/qa/long-report.html', '/tmp/qa');
+assert(longParsed.meta.documentMode === true, 'long report with multiple normal sections should remain document mode');
+assert(longParsed.slides.length === 1, 'normal sections must not be guessed as slides');
+assert(longParsed.slides[0].canvasHeight >= 1600, 'long report should get a tall editable canvas');
+
+const interactiveParsed = parseHtmlProject(interactiveFixture, 'index.html', '/tmp/qa/interactive/index.html', '/tmp/qa/interactive');
+const interactiveExport = buildExportHtml(interactiveParsed.slides, interactiveParsed.meta);
+const interactiveAssets = collectReferencedAssetPaths(interactiveExport);
+assert(interactiveParsed.meta.headExtras.includes('./styles.css'), 'interactive fixture should preserve linked CSS');
+assert(interactiveParsed.meta.headExtras.includes('./css/nested.css'), 'interactive fixture should preserve nested linked CSS');
+assert(interactiveParsed.meta.bodyScripts.includes('./scripts.js'), 'interactive fixture should preserve linked JS');
+assert(interactiveAssets.includes('./styles.css'), 'export asset scan should include linked CSS');
+assert(interactiveAssets.includes('./css/nested.css'), 'export asset scan should include nested linked CSS');
+assert(interactiveAssets.includes('./scripts.js'), 'export asset scan should include linked JS');
+assert(interactiveAssets.includes('./assets/mark.svg'), 'export asset scan should include referenced image assets');
+
+const slidesParsed = parseHtmlProject(explicitSlidesFixture, 'slides.html', '/tmp/slides.html', '/tmp');
+const slidesExport = buildExportHtml(slidesParsed.slides, slidesParsed.meta);
+assert(slidesParsed.meta.documentMode === false, 'explicit data-slide sections should import as slide mode');
+assert(slidesParsed.slides.length === 2, 'explicit slides should keep multiple pages');
+assert(slidesExport.includes('htmlppt-deck'), 'slide export should include deck runtime');
+assert(slidesExport.includes('data-htmlppt-runtime'), 'slide export should include presenter runtime');
 
 window.__SMOKE_RESULT = { ok: failures.length === 0, failures };
 console.log('SMOKE_RESULT:' + JSON.stringify(window.__SMOKE_RESULT));

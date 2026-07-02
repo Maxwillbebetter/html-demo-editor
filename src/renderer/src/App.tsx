@@ -26,6 +26,7 @@ import { registerEditorBlocks, STYLE_SECTORS } from './editorBlocks';
 import {
   buildExportHtml,
   buildSlidePreviewDoc,
+  collectReferencedAssetPaths,
   createBlankSlide,
   createDefaultProject,
   DEFAULT_CANVAS_HEIGHT,
@@ -614,7 +615,9 @@ export default function App() {
     const result = await window.desktopBridge.saveProject({
       filePath: metaRef.current.filePath,
       html,
-      defaultName: safeDefaultName(metaRef.current.title)
+      defaultName: safeDefaultName(metaRef.current.title),
+      sourceBaseDir: metaRef.current.baseDir,
+      assetPaths: collectReferencedAssetPaths(html)
     });
     if (!result) return;
 
@@ -631,7 +634,9 @@ export default function App() {
     const { html } = materializeHtml();
     const result = await window.desktopBridge.saveProjectAs({
       html,
-      defaultName: safeDefaultName(metaRef.current.title)
+      defaultName: safeDefaultName(metaRef.current.title),
+      sourceBaseDir: metaRef.current.baseDir,
+      assetPaths: collectReferencedAssetPaths(html)
     });
     if (!result) return;
 
@@ -648,7 +653,8 @@ export default function App() {
     const { html } = materializeHtml();
     await window.desktopBridge.exportPackage({
       html,
-      sourceBaseDir: metaRef.current.baseDir
+      sourceBaseDir: metaRef.current.baseDir,
+      assetPaths: collectReferencedAssetPaths(html)
     });
   }, [materializeHtml]);
 

@@ -3,16 +3,20 @@ import { mkdir, readFile, readdir, stat, writeFile, cp } from 'node:fs/promises'
 import { basename, dirname, extname, join, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { copyReferencedAssets } from './assets';
 
 interface SavePayload {
   filePath?: string;
   html: string;
   defaultName?: string;
+  sourceBaseDir?: string;
+  assetPaths?: string[];
 }
 
 interface ExportPayload {
   html: string;
   sourceBaseDir?: string;
+  assetPaths?: string[];
 }
 
 interface PresentPayload {
@@ -161,6 +165,7 @@ ipcMain.handle('project:save', async (_event, payload: SavePayload) => {
   if (!filePath) return null;
 
   await writeFile(filePath, payload.html, 'utf8');
+  await copyReferencedAssets(payload.sourceBaseDir, dirname(filePath), payload.assetPaths);
   return { filePath };
 });
 
@@ -169,6 +174,7 @@ ipcMain.handle('project:save-as', async (_event, payload: SavePayload) => {
   if (!filePath) return null;
 
   await writeFile(filePath, payload.html, 'utf8');
+  await copyReferencedAssets(payload.sourceBaseDir, dirname(filePath), payload.assetPaths);
   return { filePath };
 });
 
@@ -185,6 +191,7 @@ ipcMain.handle('project:export-package', async (_event, payload: ExportPayload) 
   await mkdir(outputDir, { recursive: true });
   await writeFile(join(outputDir, 'index.html'), payload.html, 'utf8');
   await copyCommonAssets(payload.sourceBaseDir, outputDir);
+  await copyReferencedAssets(payload.sourceBaseDir, outputDir, payload.assetPaths);
   return { filePath: join(outputDir, 'index.html') };
 });
 

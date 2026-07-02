@@ -69,10 +69,22 @@ npm run dev
 
 ```bash
 npm run typecheck
+npm run test:assets
 npm run test:smoke
+npm run test:ui
 npm run build
 npm audit --omit=dev
 ```
+
+## QA 测试样例
+
+`fixtures/qa/` 里放了几类手动测试 HTML：
+
+- `short-card.html`：短 HTML 页面。
+- `long-report.html`：包含多个普通 `section` 的长网页，应该作为一个可滚动文档导入。
+- `interactive/index.html`：带外链 CSS、JS、SVG 图片、CSS 背景图和 CSS 动效的页面。
+
+产品走查时建议分别用“打开”和“打开文件夹”导入这些样例，再测试保存、另存、导出、预览、演示、画布缩放和拖拽调整。
 
 ## Windows 打包
 
