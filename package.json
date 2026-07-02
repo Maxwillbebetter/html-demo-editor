@@ -3,6 +3,15 @@
   "version": "0.1.0",
   "description": "Windows-ready HTML presentation editor for AI-generated demo materials.",
   "license": "MIT",
+  "author": "Maxwillbebetter",
+  "homepage": "https://github.com/Maxwillbebetter/html-demo-editor#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Maxwillbebetter/html-demo-editor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Maxwillbebetter/html-demo-editor/issues"
+  },
   "keywords": [
     "electron",
     "presentation",
@@ -17,9 +26,9 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
-    "dist:win": "npm run build && electron-builder --win",
-    "dist:win:installer": "npm run build && electron-builder --win nsis",
-    "dist:win:portable": "npm run build && electron-builder --win portable"
+    "dist:win": "npm run build && electron-builder --win --publish never",
+    "dist:win:installer": "npm run build && electron-builder --win nsis --publish never",
+    "dist:win:portable": "npm run build && electron-builder --win portable --publish never"
   },
   "build": {
     "appId": "cn.local.htmldemo.editor",
