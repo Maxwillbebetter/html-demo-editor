@@ -29,6 +29,9 @@
     "test:smoke": "node scripts/smoke-rendering.mjs",
     "test:ui": "node scripts/ui-smoke.mjs",
     "typecheck": "tsc --noEmit",
+    "dist:mac": "npm run build && electron-builder --mac --publish never",
+    "dist:mac:dmg": "npm run build && electron-builder --mac dmg --publish never",
+    "dist:mac:zip": "npm run build && electron-builder --mac zip --publish never",
     "dist:win": "npm run build && electron-builder --win --publish never",
     "dist:win:installer": "npm run build && electron-builder --win nsis --publish never",
     "dist:win:portable": "npm run build && electron-builder --win portable --publish never"
@@ -43,6 +46,14 @@
       "out/**/*",
       "package.json"
     ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity",
+      "artifactName": "HTML-Demo-Editor-${version}-Mac-${arch}.${ext}"
+    },
     "win": {
       "target": [
         "nsis",

@@ -1,4 +1,4 @@
-name: Build Windows
+name: Build Desktop Packages
 
 on:
   workflow_dispatch:
@@ -7,6 +7,39 @@ on:
       - main
 
 jobs:
+  build-mac:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Smoke test import/export
+        run: npm run test:smoke
+
+      - name: Build macOS app
+        run: npm run dist:mac
+
+      - name: Upload macOS package
+        uses: actions/upload-artifact@v4
+        with:
+          name: html-demo-editor-macos
+          path: |
+            release/*.dmg
+            release/*.zip
+
   build-windows:
     runs-on: windows-latest
 
@@ -36,4 +69,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: html-demo-editor-windows
-          path: release/*
+          path: release/*.exe

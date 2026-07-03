@@ -308,26 +308,29 @@ function baseDirToFileHref(baseDir?: string): string | null {
   return null;
 }
 
-function clampCanvasSize(value: number | undefined, fallback: number): number {
+function clampCanvasSize(value: number | undefined, fallback: number, min = 320): number {
   if (!value || !Number.isFinite(value)) return fallback;
-  return Math.max(320, Math.min(12000, Math.round(value)));
+  return Math.max(min, Math.min(12000, Math.round(value)));
 }
 
 export function normalizeSlide(slide: SlideModel): SlideModel {
+  const presentationMode = slide.presentationMode || 'fit';
+  const minWidth = presentationMode === 'fit' ? DEFAULT_CANVAS_WIDTH : 320;
+  const minHeight = presentationMode === 'fit' ? DEFAULT_CANVAS_HEIGHT : 320;
   return {
     ...slide,
-    canvasWidth: clampCanvasSize(slide.canvasWidth, DEFAULT_CANVAS_WIDTH),
-    canvasHeight: clampCanvasSize(slide.canvasHeight, DEFAULT_CANVAS_HEIGHT),
-    presentationMode: slide.presentationMode || 'fit'
+    canvasWidth: clampCanvasSize(slide.canvasWidth, DEFAULT_CANVAS_WIDTH, minWidth),
+    canvasHeight: clampCanvasSize(slide.canvasHeight, DEFAULT_CANVAS_HEIGHT, minHeight),
+    presentationMode
   };
 }
 
 export function getSlideCanvasWidth(slide: SlideModel): number {
-  return clampCanvasSize(slide.canvasWidth, DEFAULT_CANVAS_WIDTH);
+  return normalizeSlide(slide).canvasWidth;
 }
 
 export function getSlideCanvasHeight(slide: SlideModel): number {
-  return clampCanvasSize(slide.canvasHeight, DEFAULT_CANVAS_HEIGHT);
+  return normalizeSlide(slide).canvasHeight;
 }
 
 function styleVarsForSlide(slide: SlideModel): string {

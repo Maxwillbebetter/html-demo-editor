@@ -2,23 +2,31 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import grapesjs, { type Component, type Editor } from 'grapesjs';
 import basicBlocks from 'grapesjs-blocks-basic';
 import {
+  Bold,
+  BringToFront,
   Code2,
   Copy,
   Download,
   FilePlus2,
   FolderOpen,
   Image,
+  Italic,
   Maximize2,
   MonitorPlay,
+  PaintBucket,
   PanelLeft,
   PanelRight,
+  Palette,
   Play,
   Plus,
   Redo2,
   Save,
   Scissors,
+  SendToBack,
   Trash2,
+  Type,
   Undo2,
+  Underline,
   ZoomIn,
   ZoomOut
 } from 'lucide-react';
@@ -44,6 +52,15 @@ import {
 } from './project';
 
 const CURRENT_DEVICE_ID = 'current-page';
+const TEXT_COLOR_SWATCHES = ['#111827', '#374151', '#ffffff', '#0f766e', '#2563eb', '#7c3aed', '#d9852b', '#dc2626'];
+const FILL_COLOR_SWATCHES = ['#ffffff', '#f8fafc', '#eef7f6', '#fff7ed', '#eff6ff', '#f5f3ff', '#111827', '#0f766e'];
+const FONT_OPTIONS = [
+  { label: 'Segoe UI', value: '"Segoe UI", Arial, sans-serif' },
+  { label: 'Arial', value: 'Arial, sans-serif' },
+  { label: '微软雅黑', value: '"Microsoft YaHei", "Segoe UI", sans-serif' },
+  { label: '宋体', value: 'SimSun, serif' },
+  { label: '等宽', value: '"Cascadia Code", Consolas, monospace' }
+];
 
 type LeftTab = 'slides' | 'blocks';
 type RightTab = 'style' | 'layers' | 'page';
@@ -58,13 +75,24 @@ interface SelectedSummary {
   left?: string;
   top?: string;
   zIndex?: string;
+  fontFamily?: string;
   fontSize?: string;
   fontWeight?: string;
+  fontStyle?: string;
   color?: string;
   backgroundColor?: string;
+  textDecoration?: string;
   borderRadius?: string;
   opacity?: string;
   isImage: boolean;
+}
+
+interface ContextMenuState {
+  x: number;
+  y: number;
+  label: string;
+  isImage: boolean;
+  canEditText: boolean;
 }
 
 function dirnameFromPath(filePath?: string): string | undefined {
@@ -145,14 +173,93 @@ function summarizeSelected(editor: Editor): SelectedSummary | null {
     left: stringStyleValue(style.left),
     top: stringStyleValue(style.top),
     zIndex: stringStyleValue(style['z-index']),
+    fontFamily: stringStyleValue(style['font-family']),
     fontSize: stringStyleValue(style['font-size']),
     fontWeight: stringStyleValue(style['font-weight']),
+    fontStyle: stringStyleValue(style['font-style']),
     color: stringStyleValue(style.color),
     backgroundColor: stringStyleValue(style['background-color']),
+    textDecoration: stringStyleValue(style['text-decoration']),
     borderRadius: stringStyleValue(style['border-radius']),
     opacity: stringStyleValue(style.opacity),
     isImage: tagName === 'img' || selected.is('image')
   };
+}
+
+function cssNumber(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function cssColorInputValue(value: string | undefined, fallback: string): string {
+  if (!value) return fallback;
+  const trimmed = value.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed;
+  if (/^#[0-9a-fA-F]{3}$/.test(trimmed)) {
+    const [, r, g, b] = trimmed;
+    return `#${r}${r}${g}${g}${b}${b}`;
+  }
+  return fallback;
+}
+
+function isBoldValue(value: string | undefined): boolean {
+  if (!value) return false;
+  if (value === 'bold' || value === 'bolder') return true;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 600;
+}
+
+function isTextLikeComponent(component: Component | null): boolean {
+  if (!component) return false;
+  const tagName = String(component.get('tagName') || component.getName() || '').toLowerCase();
+  if (component.is('text') || component.is('textnode')) return true;
+  return ['a', 'button', 'figcaption', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'p', 'span', 'td', 'th'].includes(tagName);
+}
+
+function syncEditableElementToModel(editor: Editor, element: HTMLElement | null): void {
+  if (!element) return;
+
+  const tagName = element.tagName.toLowerCase();
+  const component = getGrapesComponentFromElement(editor, element);
+  if (!component) return;
+
+  if (tagName === 'input' || tagName === 'textarea') {
+    const value = 'value' in element ? String((element as HTMLInputElement | HTMLTextAreaElement).value) : element.getAttribute('value') || '';
+    component.addAttributes({ value });
+    return;
+  }
+
+  const editableRoot = element.isContentEditable
+    ? (element.closest('[contenteditable="true"]') as HTMLElement | null) || element
+    : null;
+  if (!editableRoot) return;
+
+  const editableComponent = getGrapesComponentFromElement(editor, editableRoot) || component;
+  if (isTextLikeComponent(editableComponent)) {
+    editableComponent.components(editableRoot.innerHTML);
+  }
+}
+
+function flushEditorState(editor: Editor): void {
+  const frameDoc = editor.Canvas.getDocument();
+  const activeElement =
+    frameDoc?.activeElement && frameDoc.activeElement.nodeType === Node.ELEMENT_NODE ? (frameDoc.activeElement as HTMLElement) : null;
+
+  syncEditableElementToModel(editor, activeElement);
+
+  const selected = editor.getSelected();
+  const selectedElement = selected?.getEl?.();
+  if (selectedElement && selectedElement.nodeType === Node.ELEMENT_NODE) {
+    syncEditableElementToModel(editor, selectedElement as HTMLElement);
+  }
+
+  try {
+    (editor as unknown as { stopCommand?: (id: string) => void }).stopCommand?.('core:component-edit');
+    (editor as unknown as { RichTextEditor?: { disable?: () => void } }).RichTextEditor?.disable?.();
+  } finally {
+    activeElement?.blur();
+  }
 }
 
 function QuickField({
@@ -175,9 +282,10 @@ function QuickField({
 }
 
 function getClickElement(target: EventTarget | null): HTMLElement | null {
-  if (!(target instanceof Node)) return null;
-  const element = target.nodeType === Node.TEXT_NODE ? target.parentElement : target;
-  return element instanceof HTMLElement ? element : null;
+  const node = target as Node | null;
+  if (!node || typeof node.nodeType !== 'number') return null;
+  const element = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+  return element?.nodeType === Node.ELEMENT_NODE ? (element as HTMLElement) : null;
 }
 
 function getGrapesComponentFromElement(editor: Editor, target: EventTarget | null): Component | null {
@@ -248,13 +356,16 @@ export default function App() {
   const [codeOpen, setCodeOpen] = useState(false);
   const [codeHtml, setCodeHtml] = useState('');
   const [codeCss, setCodeCss] = useState('');
-  const [gridEnabled, setGridEnabled] = useState(true);
+  const [gridEnabled, setGridEnabled] = useState(false);
   const [draggedSlideId, setDraggedSlideId] = useState<string | null>(null);
-  const [canvasFitMode, setCanvasFitMode] = useState<CanvasFitMode>('fit');
+  const [canvasFitMode, setCanvasFitMode] = useState<CanvasFitMode>('width');
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
   const editorHostRef = useRef<HTMLDivElement | null>(null);
   const editorShellRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<Editor | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
   const loadingSlideRef = useRef(false);
   const slidesRef = useRef(slides);
   const metaRef = useRef(meta);
@@ -287,6 +398,32 @@ export default function App() {
     zoomRef.current = zoom;
     editorRef.current?.Canvas.setZoom(zoom);
   }, [zoom]);
+
+  const notify = useCallback((message: string) => {
+    setToast(message);
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 2600);
+  }, []);
+
+  useEffect(() => {
+    const dismissTransientUi = (event: Event) => {
+      if (event instanceof KeyboardEvent && event.key !== 'Escape') return;
+      setContextMenu(null);
+    };
+
+    window.addEventListener('click', dismissTransientUi);
+    window.addEventListener('keydown', dismissTransientUi);
+    window.addEventListener('resize', dismissTransientUi);
+    return () => {
+      window.removeEventListener('click', dismissTransientUi);
+      window.removeEventListener('keydown', dismissTransientUi);
+      window.removeEventListener('resize', dismissTransientUi);
+      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    };
+  }, []);
 
   const syncCanvasHelpers = useCallback(() => {
     const editor = editorRef.current;
@@ -509,6 +646,8 @@ export default function App() {
     const currentId = currentSlideIdRef.current;
     if (!editor || !currentId || loadingSlideRef.current) return slidesRef.current;
 
+    flushEditorState(editor);
+
     const updated: SlideModel[] = slidesRef.current.map((slide) =>
       slide.id === currentId
         ? {
@@ -603,9 +742,43 @@ export default function App() {
             const component = getGrapesComponentFromElement(editor, event.target);
             if (!component) return;
 
+            setContextMenu(null);
             editor.select(component);
             setRightTab('style');
             setSelectedSummary(summarizeSelected(editor));
+          },
+          true
+        );
+        frameDoc.addEventListener(
+          'contextmenu',
+          (event) => {
+            const component = getGrapesComponentFromElement(editor, event.target);
+            if (!component) {
+              setContextMenu(null);
+              return;
+            }
+
+            event.preventDefault();
+            editor.select(component);
+            setRightTab('style');
+            setSelectedSummary(summarizeSelected(editor));
+
+            const frameEl = editor.Canvas.getFrameEl();
+            const frameRect = frameEl?.getBoundingClientRect();
+            const frameWindow = frameDoc.defaultView;
+            const scaleX = frameRect && frameWindow?.innerWidth ? frameRect.width / frameWindow.innerWidth : zoomRef.current / 100;
+            const scaleY = frameRect && frameWindow?.innerHeight ? frameRect.height / frameWindow.innerHeight : zoomRef.current / 100;
+            const left = (frameRect?.left ?? 0) + event.clientX * scaleX;
+            const top = (frameRect?.top ?? 0) + event.clientY * scaleY;
+            const summary = summarizeSelected(editor);
+
+            setContextMenu({
+              x: Math.max(8, Math.min(window.innerWidth - 230, left)),
+              y: Math.max(8, Math.min(window.innerHeight - 260, top)),
+              label: summary?.label || '元素',
+              isImage: summary?.isImage || false,
+              canEditText: isTextLikeComponent(component)
+            });
           },
           true
         );
@@ -671,7 +844,8 @@ export default function App() {
     if (!result) return;
     const parsed = parseHtmlProject(result.html, result.name, result.filePath, result.baseDir);
     replaceProject(parsed.meta, parsed.slides);
-  }, [confirmDiscard, replaceProject]);
+    notify(`已打开 ${result.name}`);
+  }, [confirmDiscard, notify, replaceProject]);
 
   const handleOpenFolder = useCallback(async () => {
     if (!confirmDiscard()) return;
@@ -679,73 +853,104 @@ export default function App() {
     if (!result) return;
     const parsed = parseHtmlProject(result.html, result.name, result.filePath, result.baseDir);
     replaceProject(parsed.meta, parsed.slides);
-  }, [confirmDiscard, replaceProject]);
+    notify(`已打开 ${result.name}`);
+  }, [confirmDiscard, notify, replaceProject]);
 
   const handleSave = useCallback(async () => {
-    const { html } = materializeHtml();
-    const result = await window.desktopBridge.saveProject({
-      filePath: metaRef.current.filePath,
-      html,
-      defaultName: safeDefaultName(metaRef.current.title),
-      sourceBaseDir: metaRef.current.baseDir,
-      assetPaths: collectReferencedAssetPaths(html)
-    });
-    if (!result) return;
+    try {
+      const { html } = materializeHtml();
+      const result = await window.desktopBridge.saveProject({
+        filePath: metaRef.current.filePath,
+        html,
+        defaultName: safeDefaultName(metaRef.current.title),
+        sourceBaseDir: metaRef.current.baseDir,
+        assetPaths: collectReferencedAssetPaths(html)
+      });
+      if (!result) return;
 
-    setMeta((current) => ({
-      ...current,
-      filePath: result.filePath,
-      baseDir: dirnameFromPath(result.filePath),
-      sourceName: result.filePath.split(/[\\/]/).pop()
-    }));
-    setDirty(false);
-  }, [materializeHtml]);
+      setMeta((current) => ({
+        ...current,
+        filePath: result.filePath,
+        baseDir: dirnameFromPath(result.filePath),
+        sourceName: result.filePath.split(/[\\/]/).pop()
+      }));
+      setDirty(false);
+      notify(`已保存到 ${result.filePath.split(/[\\/]/).pop()}`);
+    } catch (error) {
+      console.error(error);
+      notify('保存失败，请检查文件权限或路径');
+    }
+  }, [materializeHtml, notify]);
 
   const handleSaveAs = useCallback(async () => {
-    const { html } = materializeHtml();
-    const result = await window.desktopBridge.saveProjectAs({
-      html,
-      defaultName: safeDefaultName(metaRef.current.title),
-      sourceBaseDir: metaRef.current.baseDir,
-      assetPaths: collectReferencedAssetPaths(html)
-    });
-    if (!result) return;
+    try {
+      const { html } = materializeHtml();
+      const result = await window.desktopBridge.saveProjectAs({
+        html,
+        defaultName: safeDefaultName(metaRef.current.title),
+        sourceBaseDir: metaRef.current.baseDir,
+        assetPaths: collectReferencedAssetPaths(html)
+      });
+      if (!result) return;
 
-    setMeta((current) => ({
-      ...current,
-      filePath: result.filePath,
-      baseDir: dirnameFromPath(result.filePath),
-      sourceName: result.filePath.split(/[\\/]/).pop()
-    }));
-    setDirty(false);
-  }, [materializeHtml]);
+      setMeta((current) => ({
+        ...current,
+        filePath: result.filePath,
+        baseDir: dirnameFromPath(result.filePath),
+        sourceName: result.filePath.split(/[\\/]/).pop()
+      }));
+      setDirty(false);
+      notify(`已另存为 ${result.filePath.split(/[\\/]/).pop()}`);
+    } catch (error) {
+      console.error(error);
+      notify('另存失败，请检查文件权限或路径');
+    }
+  }, [materializeHtml, notify]);
 
   const handleExport = useCallback(async () => {
-    const { html } = materializeHtml();
-    await window.desktopBridge.exportPackage({
-      html,
-      sourceBaseDir: metaRef.current.baseDir,
-      assetPaths: collectReferencedAssetPaths(html)
-    });
-  }, [materializeHtml]);
+    try {
+      const { html } = materializeHtml();
+      const result = await window.desktopBridge.exportPackage({
+        html,
+        sourceBaseDir: metaRef.current.baseDir,
+        assetPaths: collectReferencedAssetPaths(html)
+      });
+      if (result) notify(`已导出到 ${result.filePath}`);
+    } catch (error) {
+      console.error(error);
+      notify('导出失败，请检查目标文件夹权限');
+    }
+  }, [materializeHtml, notify]);
 
   const handlePresent = useCallback(async () => {
-    const { html } = materializeHtml();
-    await window.desktopBridge.presentProject({
-      html,
-      baseDir: metaRef.current.baseDir,
-      fullscreen: true
-    });
-  }, [materializeHtml]);
+    try {
+      const { html } = materializeHtml();
+      await window.desktopBridge.presentProject({
+        html,
+        baseDir: metaRef.current.baseDir,
+        fullscreen: true
+      });
+      notify('已用当前修改进入演示');
+    } catch (error) {
+      console.error(error);
+      notify('演示打开失败，请重试');
+    }
+  }, [materializeHtml, notify]);
 
   const handlePreviewWindow = useCallback(async () => {
-    const { html } = materializeHtml();
-    await window.desktopBridge.presentProject({
-      html,
-      baseDir: metaRef.current.baseDir,
-      fullscreen: false
-    });
-  }, [materializeHtml]);
+    try {
+      const { html } = materializeHtml();
+      await window.desktopBridge.presentProject({
+        html,
+        baseDir: metaRef.current.baseDir,
+        fullscreen: false
+      });
+      notify('已用当前修改打开预览');
+    } catch (error) {
+      console.error(error);
+      notify('预览打开失败，请重试');
+    }
+  }, [materializeHtml, notify]);
 
   const handleUndo = useCallback(() => {
     editorRef.current?.UndoManager.undo();
@@ -768,8 +973,8 @@ export default function App() {
     const bounds = shell.getBoundingClientRect();
     const width = getSlideCanvasWidth(normalized);
     const height = getSlideCanvasHeight(normalized);
-    const availableWidth = Math.max(320, bounds.width - 140);
-    const availableHeight = Math.max(240, bounds.height - 96);
+    const availableWidth = Math.max(320, bounds.width - 4);
+    const availableHeight = Math.max(240, bounds.height - 4);
     const fit =
       normalized.presentationMode === 'scroll' || canvasFitModeRef.current === 'width'
         ? Math.floor((availableWidth / width) * 100)
@@ -843,8 +1048,21 @@ export default function App() {
 
   const handleDeleteSlide = useCallback(
     (slideId: string) => {
-      if (slidesRef.current.length <= 1) return;
       const updated = commitCurrentSlide();
+      if (updated.length <= 1) {
+        const blank = createBlankSlide('新页面');
+        const nextMeta = { ...metaRef.current, documentMode: false };
+        setMeta(nextMeta);
+        metaRef.current = nextMeta;
+        setSlides([blank]);
+        slidesRef.current = [blank];
+        setCurrentSlideId(blank.id);
+        currentSlideIdRef.current = blank.id;
+        setDirty(true);
+        loadSlideIntoEditor(blank);
+        return;
+      }
+
       const next = updated.filter((slide) => slide.id !== slideId);
       const nextCurrent = slideId === currentSlideIdRef.current ? next[Math.max(0, updated.findIndex((s) => s.id === slideId) - 1)] : null;
       setSlides(next);
@@ -897,6 +1115,7 @@ export default function App() {
     if (!selected) return;
     selected.remove();
     setSelectedSummary(null);
+    setContextMenu(null);
     setDirty(true);
   }, []);
 
@@ -908,6 +1127,44 @@ export default function App() {
     const clone = selected.clone();
     parent.append(clone);
     editorRef.current?.select(clone);
+    setContextMenu(null);
+    setDirty(true);
+  }, []);
+
+  const handleEditSelectedText = useCallback(() => {
+    const editor = editorRef.current;
+    const selected = editor?.getSelected();
+    const element = selected?.getEl?.();
+    if (!editor || !selected || !element || element.nodeType !== Node.ELEMENT_NODE || !isTextLikeComponent(selected)) return;
+
+    setContextMenu(null);
+    const target = element as HTMLElement;
+    editor.select(selected);
+    (editor as unknown as { runCommand?: (id: string, options?: unknown) => void }).runCommand?.('core:component-edit', {
+      component: selected
+    });
+    target.dispatchEvent(
+      new MouseEvent('dblclick', {
+        bubbles: true,
+        cancelable: true,
+        view: target.ownerDocument.defaultView
+      })
+    );
+    target.focus({ preventScroll: true });
+  }, []);
+
+  const handleMoveSelectionLayer = useCallback((placement: 'front' | 'back') => {
+    const editor = editorRef.current;
+    const selected = editor?.getSelected();
+    if (!editor || !selected) return;
+
+    const style = selected.getStyle();
+    selected.addStyle({
+      position: stringStyleValue(style.position) || 'relative',
+      'z-index': placement === 'front' ? '999' : '0'
+    });
+    setSelectedSummary(summarizeSelected(editor));
+    setContextMenu(null);
     setDirty(true);
   }, []);
 
@@ -930,6 +1187,7 @@ export default function App() {
     }
     editor.AssetManager.add(image.dataUrl);
     setSelectedSummary(summarizeSelected(editor));
+    setContextMenu(null);
     setDirty(true);
   }, []);
 
@@ -940,19 +1198,62 @@ export default function App() {
     setDirty(true);
   }, []);
 
-  const handleQuickStyleChange = useCallback((property: string, value: string) => {
+  const applySelectedStyles = useCallback((styles: Record<string, string>) => {
     const editor = editorRef.current;
     const selected = editor?.getSelected();
     if (!editor || !selected) return;
 
-    selected.addStyle({ [property]: normalizeCssValue(property, value) });
+    selected.addStyle(styles);
     setSelectedSummary(summarizeSelected(editor));
     setDirty(true);
   }, []);
 
+  const handleQuickStyleChange = useCallback(
+    (property: string, value: string) => {
+      applySelectedStyles({ [property]: normalizeCssValue(property, value) });
+    },
+    [applySelectedStyles]
+  );
+
+  const handleContextFontSizeStep = useCallback(
+    (delta: number) => {
+      const editor = editorRef.current;
+      const selected = editor?.getSelected();
+      if (!editor || !selected) return;
+
+      const style = selected.getStyle();
+      const currentSize = cssNumber(stringStyleValue(style['font-size']) || selectedSummary?.fontSize, 24);
+      const nextSize = Math.max(8, Math.min(220, Math.round(currentSize + delta)));
+      applySelectedStyles({ 'font-size': `${nextSize}px` });
+    },
+    [applySelectedStyles, selectedSummary?.fontSize]
+  );
+
+  const handleToggleTextStyle = useCallback(
+    (styleName: 'bold' | 'italic' | 'underline') => {
+      const editor = editorRef.current;
+      const selected = editor?.getSelected();
+      if (!editor || !selected) return;
+
+      const style = selected.getStyle();
+      if (styleName === 'bold') {
+        applySelectedStyles({ 'font-weight': isBoldValue(stringStyleValue(style['font-weight'])) ? '400' : '700' });
+        return;
+      }
+      if (styleName === 'italic') {
+        applySelectedStyles({ 'font-style': stringStyleValue(style['font-style']) === 'italic' ? 'normal' : 'italic' });
+        return;
+      }
+      const current = stringStyleValue(style['text-decoration']) || '';
+      applySelectedStyles({ 'text-decoration': current.includes('underline') ? 'none' : 'underline' });
+    },
+    [applySelectedStyles]
+  );
+
   const openCodeView = useCallback(() => {
     const editor = editorRef.current;
     if (!editor) return;
+    flushEditorState(editor);
     setCodeHtml(formatLooseHtml(editor.getHtml()));
     setCodeCss(editor.getCss() ?? '');
     setCodeOpen(true);
@@ -975,6 +1276,13 @@ export default function App() {
 
   const currentSlideIndex = slides.findIndex((slide) => slide.id === currentSlideId);
   const selectedSlide = slides[currentSlideIndex] ?? slides[0];
+  const contextFontSize = cssNumber(selectedSummary?.fontSize, 24);
+  const contextTextColor = cssColorInputValue(selectedSummary?.color, '#111827');
+  const contextFillColor = cssColorInputValue(selectedSummary?.backgroundColor, '#ffffff');
+  const contextFontValue = FONT_OPTIONS.some((option) => option.value === selectedSummary?.fontFamily) ? selectedSummary?.fontFamily : '';
+  const contextBoldActive = isBoldValue(selectedSummary?.fontWeight);
+  const contextItalicActive = selectedSummary?.fontStyle === 'italic';
+  const contextUnderlineActive = (selectedSummary?.textDecoration || '').includes('underline');
 
   const applyCurrentSlideCanvasPatch = useCallback(
     (patch: Partial<Pick<SlideModel, 'canvasWidth' | 'canvasHeight' | 'presentationMode'>>, reload = false) => {
@@ -1208,7 +1516,6 @@ export default function App() {
                         event.stopPropagation();
                         handleDeleteSlide(slide.id);
                       }}
-                      disabled={slides.length <= 1}
                     >
                       <Trash2 size={14} />
                     </button>
@@ -1283,16 +1590,6 @@ export default function App() {
           </div>
           <div ref={editorShellRef} className="editor-shell">
             <div ref={editorHostRef} className={`editor-host${meta.documentMode ? ' is-document-mode' : ''}`} />
-            {!meta.documentMode && (
-              <button
-                className="canvas-resize-handle"
-                type="button"
-                title="拖拽调整画布大小"
-                onMouseDown={handleCanvasResizeStart}
-              >
-                <span>{selectedSlide ? `${getSlideCanvasWidth(selectedSlide)} × ${getSlideCanvasHeight(selectedSlide)}` : '画布'}</span>
-              </button>
-            )}
           </div>
         </section>
 
@@ -1505,13 +1802,162 @@ export default function App() {
       </main>
 
       <footer className="statusbar">
-        <span>{dirty ? '有未保存修改' : '已同步'}</span>
+        <span>{dirty ? '有未保存修改' : '已保存'}</span>
         <span>
           HTML/CSS · {selectedSlide ? `${getSlideCanvasWidth(selectedSlide)}×${getSlideCanvasHeight(selectedSlide)}` : '页面'} · 本地文件
         </span>
       </footer>
 
       <div id="hidden-gjs-panel" hidden />
+
+      {contextMenu && (
+        <div
+          className="context-menu"
+          role="menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <strong>{contextMenu.label}</strong>
+          <div className="context-style-panel" aria-label="快捷格式">
+            <div className="context-control-row">
+              <label className="context-select">
+                <Type size={14} />
+                <select value={contextFontValue} onChange={(event) => handleQuickStyleChange('font-family', event.target.value)}>
+                  <option value="">字体</option>
+                  {FONT_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="context-size-control" aria-label="字号">
+                <button type="button" title="减小字号" onClick={() => handleContextFontSizeStep(-2)}>
+                  -
+                </button>
+                <input
+                  aria-label="字号"
+                  min={8}
+                  max={220}
+                  type="number"
+                  value={contextFontSize}
+                  onChange={(event) => handleQuickStyleChange('font-size', event.target.value)}
+                />
+                <button type="button" title="增大字号" onClick={() => handleContextFontSizeStep(2)}>
+                  +
+                </button>
+              </div>
+            </div>
+            <div className="context-icon-row" aria-label="文字样式">
+              <button
+                className={contextBoldActive ? 'is-active' : ''}
+                type="button"
+                title="加粗"
+                onClick={() => handleToggleTextStyle('bold')}
+              >
+                <Bold size={15} />
+              </button>
+              <button
+                className={contextItalicActive ? 'is-active' : ''}
+                type="button"
+                title="斜体"
+                onClick={() => handleToggleTextStyle('italic')}
+              >
+                <Italic size={15} />
+              </button>
+              <button
+                className={contextUnderlineActive ? 'is-active' : ''}
+                type="button"
+                title="下划线"
+                onClick={() => handleToggleTextStyle('underline')}
+              >
+                <Underline size={15} />
+              </button>
+            </div>
+            <div className="context-color-group">
+              <div className="context-color-title">
+                <Palette size={14} />
+                <span>文字</span>
+                <input
+                  aria-label="文字颜色"
+                  type="color"
+                  value={contextTextColor}
+                  onChange={(event) => handleQuickStyleChange('color', event.target.value)}
+                />
+              </div>
+              <div className="context-swatch-row">
+                {TEXT_COLOR_SWATCHES.map((color) => (
+                  <button
+                    key={color}
+                    aria-label={`文字颜色 ${color}`}
+                    className="context-swatch"
+                    style={{ backgroundColor: color }}
+                    type="button"
+                    onClick={() => handleQuickStyleChange('color', color)}
+                  />
+                ))}
+              </div>
+            </div>
+            <div className="context-color-group">
+              <div className="context-color-title">
+                <PaintBucket size={14} />
+                <span>背景</span>
+                <input
+                  aria-label="背景颜色"
+                  type="color"
+                  value={contextFillColor}
+                  onChange={(event) => handleQuickStyleChange('background-color', event.target.value)}
+                />
+              </div>
+              <div className="context-swatch-row">
+                {FILL_COLOR_SWATCHES.map((color) => (
+                  <button
+                    key={color}
+                    aria-label={`背景颜色 ${color}`}
+                    className="context-swatch"
+                    style={{ backgroundColor: color }}
+                    type="button"
+                    onClick={() => handleQuickStyleChange('background-color', color)}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="context-menu-separator" />
+          <button type="button" role="menuitem" disabled={!contextMenu.canEditText} onClick={handleEditSelectedText}>
+            <Type size={15} />
+            编辑文字
+          </button>
+          <button type="button" role="menuitem" onClick={handleDuplicateSelection}>
+            <Copy size={15} />
+            复制
+          </button>
+          <button type="button" role="menuitem" onClick={handleDeleteSelection}>
+            <Trash2 size={15} />
+            删除
+          </button>
+          <button type="button" role="menuitem" onClick={handleReplaceImage}>
+            <Image size={15} />
+            {contextMenu.isImage ? '替换图片' : '设置背景图'}
+          </button>
+          <div className="context-menu-separator" />
+          <button type="button" role="menuitem" onClick={() => handleMoveSelectionLayer('front')}>
+            <BringToFront size={15} />
+            置于顶层
+          </button>
+          <button type="button" role="menuitem" onClick={() => handleMoveSelectionLayer('back')}>
+            <SendToBack size={15} />
+            置于底层
+          </button>
+        </div>
+      )}
+
+      {toast && (
+        <div className="app-toast" role="status" aria-live="polite">
+          {toast}
+        </div>
+      )}
 
       {codeOpen && (
         <div className="code-modal" role="dialog" aria-modal="true" aria-label="代码视图">
