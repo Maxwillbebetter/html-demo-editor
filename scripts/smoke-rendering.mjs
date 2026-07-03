@@ -18,13 +18,14 @@ const shortFixture = await readFile(join(root, 'fixtures/qa/short-card.html'), '
 const longFixture = await readFile(join(root, 'fixtures/qa/long-report.html'), 'utf8');
 const interactiveFixture = await readFile(join(root, 'fixtures/qa/interactive/index.html'), 'utf8');
 const fixture = String.raw`<!doctype html>
-<html>
+<html class="theme-dark" data-density="demo">
 <head>
   <title>AI long page</title>
   <link rel="stylesheet" href="./styles.css">
   <style>
+    html.theme-dark { --hero-text: #172033; }
     body.original-body > .wrap { width: 1440px; min-height: 2100px; background: linear-gradient(#fff7ed, #e0f2fe); }
-    .hero { height: 820px; color: #123; }
+    .hero { height: 820px; color: var(--hero-text); }
     .card { width: 420px; height: 260px; background: #0f766e; color: white; }
   </style>
 </head>
@@ -61,17 +62,21 @@ assert(parsed.slides.length === 1, 'expected a single imported page');
 assert(parsed.meta.documentMode === true, 'plain imported HTML should default to document mode');
 assert(slide.presentationMode === 'scroll', 'single imported HTML should default to scroll mode');
 assert(slide.canvasHeight >= 1600, 'scroll page should keep a tall editable canvas');
-if (!/^<div[^>]*class="wrap\\s+deck-slide|^<div[^>]*class="deck-slide\\s+wrap/.test(slide.components)) {
-  failures.push('single root .wrap should remain the page root, not be nested inside a forced section');
-}
+assert(/^<div[^>]*class="wrap"/.test(slide.components), 'single root .wrap should remain the page root, not be nested inside a forced section');
+assert(!/^<div[^>]*class="[^"]*deck-slide/.test(slide.components), 'document mode root should not receive slide-only classes');
 assert(parsed.meta.headExtras.includes('stylesheet'), 'external stylesheet link should be preserved');
 assert(parsed.meta.bodyScripts.includes('scriptLoaded'), 'body scripts should be preserved for preview/export');
+assert(parsed.meta.htmlAttributes?.class === 'theme-dark', 'html class should be preserved for theme-dependent CSS');
 assert(exported.includes('body class="original-body"'), 'body class should be preserved in document export');
+assert(exported.includes('<html lang="zh-CN" class="theme-dark" data-density="demo">'), 'document export should preserve html attributes');
 assert(!exported.includes('htmlppt-deck'), 'document export should not add deck runtime classes');
 assert(!exported.includes('<main'), 'document export should not wrap pages in a main that breaks body > .wrap selectors');
 assert(!exported.includes('data-presentation-mode='), 'document export should strip editor-only slide attributes');
+assert(!exported.includes('data-htmlppt-document-root'), 'document export should strip editor document root attributes');
 assert(/<div[^>]*class="wrap"[^>]*>/.test(exported), 'document export should restore the original root element class');
 assert(preview.includes('<base href="file:///tmp/ai-report/">'), 'srcDoc preview should include a base href for relative assets');
+assert(!preview.includes('background: #ffffff'), 'document preview should not force a white browser background');
+assert(!preview.includes('deck-slide {'), 'document preview should not inject slide-only CSS');
 
 const shortParsed = parseHtmlProject(shortFixture, 'short-card.html', '/tmp/qa/short-card.html', '/tmp/qa');
 assert(shortParsed.meta.documentMode === true && shortParsed.slides.length === 1, 'short HTML should import as one document page');

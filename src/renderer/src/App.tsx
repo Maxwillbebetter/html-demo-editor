@@ -292,9 +292,11 @@ export default function App() {
     const editor = editorRef.current;
     const doc = editor?.Canvas.getDocument();
     if (!doc) return;
+    const isDocumentMode = metaRef.current.documentMode === true;
 
     doc.querySelectorAll('[data-html-demo-editor-managed="head"]').forEach((node) => node.remove());
-    doc.documentElement.classList.toggle('html-demo-editor-grid', gridEnabledRef.current);
+    doc.documentElement.classList.toggle('html-demo-editor-grid', gridEnabledRef.current && !isDocumentMode);
+    doc.documentElement.classList.toggle('html-demo-editor-document-mode', isDocumentMode);
 
     const baseHref = baseDirToFileHref(metaRef.current.baseDir);
     if (baseHref) {
@@ -312,7 +314,50 @@ export default function App() {
       doc.head.insertBefore(helperStyle, baseHref ? doc.head.children[1] || null : doc.head.firstChild);
     }
 
-    helperStyle.textContent = `
+    const previousHtmlClasses = (doc.documentElement.getAttribute('data-html-demo-editor-managed-html-classes') || '')
+      .split(/\s+/)
+      .filter(Boolean);
+    previousHtmlClasses.forEach((className) => doc.documentElement.classList.remove(className));
+    const previousHtmlAttrs = (doc.documentElement.getAttribute('data-html-demo-editor-managed-html-attrs') || '')
+      .split(/\s+/)
+      .filter(Boolean);
+    previousHtmlAttrs.forEach((name) => doc.documentElement.removeAttribute(name));
+
+    const htmlAttributes = metaRef.current.htmlAttributes || {};
+    const managedHtmlClasses: string[] = [];
+    const managedHtmlAttrs: string[] = [];
+    Object.entries(htmlAttributes).forEach(([name, value]) => {
+      if (name.toLowerCase() === 'class') {
+        value
+          .split(/\s+/)
+          .filter(Boolean)
+          .forEach((className) => {
+            doc.documentElement.classList.add(className);
+            managedHtmlClasses.push(className);
+          });
+        return;
+      }
+      doc.documentElement.setAttribute(name, value);
+      managedHtmlAttrs.push(name);
+    });
+    doc.documentElement.setAttribute('data-html-demo-editor-managed-html-classes', managedHtmlClasses.join(' '));
+    doc.documentElement.setAttribute('data-html-demo-editor-managed-html-attrs', managedHtmlAttrs.join(' '));
+
+    helperStyle.textContent = isDocumentMode
+      ? `
+      html.html-demo-editor-grid body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 2147483647;
+        background-image:
+          linear-gradient(rgba(15, 118, 110, 0.13) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(15, 118, 110, 0.13) 1px, transparent 1px);
+        background-size: 24px 24px;
+      }
+    `
+      : `
       html {
         min-height: 100%;
       }
@@ -389,13 +434,33 @@ export default function App() {
     });
     doc.body.setAttribute('data-html-demo-editor-managed-body-classes', managedClasses.join(' '));
     doc.body.setAttribute('data-html-demo-editor-managed-body-attrs', managedAttrs.join(' '));
+
+    const scriptSignature = metaRef.current.bodyScripts || '';
+    if (doc.body.getAttribute('data-html-demo-editor-script-signature') !== scriptSignature) {
+      doc.body.querySelectorAll('[data-html-demo-editor-managed="body-script"]').forEach((node) => node.remove());
+      doc.body.setAttribute('data-html-demo-editor-script-signature', scriptSignature);
+
+      if (scriptSignature.trim()) {
+        const scriptTemplate = doc.createElement('template');
+        scriptTemplate.innerHTML = scriptSignature;
+        Array.from(scriptTemplate.content.querySelectorAll('script')).forEach((sourceScript) => {
+          const script = doc.createElement('script');
+          Array.from(sourceScript.attributes).forEach((attr) => script.setAttribute(attr.name, attr.value));
+          script.textContent = sourceScript.textContent;
+          script.setAttribute('data-html-demo-editor-managed', 'body-script');
+          doc.body.appendChild(script);
+        });
+      }
+    }
   }, []);
 
   const updateCanvasDevice = useCallback((slide: SlideModel) => {
     const editor = editorRef.current;
     if (!editor) return;
     const normalized = normalizeSlide(slide);
-    const width = `${getSlideCanvasWidth(normalized)}px`;
+    const shellBounds = editorShellRef.current?.getBoundingClientRect();
+    const documentViewportWidth = shellBounds ? Math.max(640, Math.floor(shellBounds.width - 34)) : getSlideCanvasWidth(normalized);
+    const width = `${metaRef.current.documentMode ? documentViewportWidth : getSlideCanvasWidth(normalized)}px`;
     const height = `${getSlideCanvasHeight(normalized)}px`;
     const deviceManager = editor.Devices;
     let device = deviceManager.get(CURRENT_DEVICE_ID);
@@ -470,6 +535,12 @@ export default function App() {
       slidesRef.current = normalizedSlides;
       metaRef.current = nextMeta;
       currentSlideIdRef.current = firstSlide.id;
+      if (nextMeta.documentMode) {
+        setGridEnabled(false);
+        gridEnabledRef.current = false;
+        setCanvasFitMode('width');
+        canvasFitModeRef.current = 'width';
+      }
       loadSlideIntoEditor(firstSlide);
     },
     [loadSlideIntoEditor]
@@ -689,6 +760,11 @@ export default function App() {
     if (!shell) return;
     const current = slidesRef.current.find((slide) => slide.id === currentSlideIdRef.current) ?? slidesRef.current[0];
     const normalized = current ? normalizeSlide(current) : createBlankSlide();
+    if (metaRef.current.documentMode) {
+      updateCanvasDevice(normalized);
+      setZoom(100);
+      return;
+    }
     const bounds = shell.getBoundingClientRect();
     const width = getSlideCanvasWidth(normalized);
     const height = getSlideCanvasHeight(normalized);
@@ -699,7 +775,7 @@ export default function App() {
         ? Math.floor((availableWidth / width) * 100)
         : Math.floor(Math.min(availableWidth / width, availableHeight / height) * 100);
     setZoom(Math.max(10, Math.min(220, fit)));
-  }, []);
+  }, [updateCanvasDevice]);
 
   useEffect(() => {
     const timer = window.setTimeout(handleFitCanvas, 80);
@@ -1153,13 +1229,22 @@ export default function App() {
               <strong>{selectedSlide?.name || '页面'}</strong>
               <span>
                 {projectModeLabel(meta.documentMode)} ·{' '}
-                {selectedSlide ? `${getSlideCanvasWidth(selectedSlide)}×${getSlideCanvasHeight(selectedSlide)} · ${presentationModeLabel(selectedSlide.presentationMode)}` : '页面'} ·{' '}
+                {meta.documentMode
+                  ? '浏览器自适应'
+                  : selectedSlide
+                    ? `${getSlideCanvasWidth(selectedSlide)}×${getSlideCanvasHeight(selectedSlide)} · ${presentationModeLabel(selectedSlide.presentationMode)}`
+                    : '页面'} ·{' '}
                 {currentSlideIndex + 1 || 1}/{slides.length}
               </span>
             </div>
             <div className="canvas-tools">
               <label className="toggle-row">
-                <input checked={gridEnabled} type="checkbox" onChange={(event) => setGridEnabled(event.target.checked)} />
+                <input
+                  checked={gridEnabled && !meta.documentMode}
+                  disabled={meta.documentMode}
+                  type="checkbox"
+                  onChange={(event) => setGridEnabled(event.target.checked)}
+                />
                 网格
               </label>
               <button
@@ -1197,15 +1282,17 @@ export default function App() {
             </div>
           </div>
           <div ref={editorShellRef} className="editor-shell">
-            <div ref={editorHostRef} className="editor-host" />
-            <button
-              className="canvas-resize-handle"
-              type="button"
-              title="拖拽调整画布大小"
-              onMouseDown={handleCanvasResizeStart}
-            >
-              <span>{selectedSlide ? `${getSlideCanvasWidth(selectedSlide)} × ${getSlideCanvasHeight(selectedSlide)}` : '画布'}</span>
-            </button>
+            <div ref={editorHostRef} className={`editor-host${meta.documentMode ? ' is-document-mode' : ''}`} />
+            {!meta.documentMode && (
+              <button
+                className="canvas-resize-handle"
+                type="button"
+                title="拖拽调整画布大小"
+                onMouseDown={handleCanvasResizeStart}
+              >
+                <span>{selectedSlide ? `${getSlideCanvasWidth(selectedSlide)} × ${getSlideCanvasHeight(selectedSlide)}` : '画布'}</span>
+              </button>
+            )}
           </div>
         </section>
 

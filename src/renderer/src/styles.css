@@ -435,6 +435,12 @@ button {
   background: #dfe5eb;
 }
 
+.editor-host.is-document-mode {
+  border-color: #d8e0e7;
+  border-radius: 0;
+  background: #ffffff;
+}
+
 .editor-host .gjs-editor {
   font-family: "Segoe UI", Inter, Arial, sans-serif;
 }
@@ -451,6 +457,15 @@ button {
   justify-content: center;
   align-items: flex-start;
   padding: 26px 28px 80px;
+}
+
+.editor-host.is-document-mode .gjs-cv-canvas {
+  background: #ffffff;
+}
+
+.editor-host.is-document-mode .gjs-cv-canvas__frames {
+  justify-content: flex-start;
+  padding: 0 0 72px;
 }
 
 .editor-host .gjs-frame-wrapper {

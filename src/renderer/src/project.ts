@@ -17,6 +17,7 @@ export interface ProjectMeta {
   sourceName?: string;
   headExtras: string;
   bodyScripts: string;
+  htmlAttributes?: Record<string, string>;
   bodyAttributes?: Record<string, string>;
   documentMode?: boolean;
 }
@@ -356,6 +357,16 @@ function applySlideAttributes(element: HTMLElement, slide: SlideModel, index: nu
   element.setAttribute('style', mergeStyleVars(element.getAttribute('style'), styleVarsForSlide(normalized)));
 }
 
+function applyDocumentRootAttributes(element: HTMLElement, slide: SlideModel): void {
+  const normalized = normalizeSlide(slide);
+  element.classList.remove('deck-slide', 'is-active');
+  element.setAttribute('data-htmlppt-document-root', 'true');
+  element.setAttribute('data-slide-id', normalized.id);
+  element.setAttribute('data-canvas-width', String(normalized.canvasWidth));
+  element.setAttribute('data-canvas-height', String(normalized.canvasHeight));
+  element.setAttribute('data-presentation-mode', normalized.presentationMode);
+}
+
 function removeRuntimeNodes(root: ParentNode): void {
   root.querySelectorAll('[data-htmlppt-runtime], .presenter-hud, .presenter-blank').forEach((node) => node.remove());
 }
@@ -406,6 +417,10 @@ function serializeAttributes(attributes: Record<string, string> | undefined, ext
     .filter(([name]) => name.toLowerCase() !== 'data-htmlppt-runtime')
     .map(([name, value]) => `${name}="${escapeAttr(value)}"`)
     .join(' ');
+}
+
+function serializeHtmlAttributes(attributes: Record<string, string> | undefined): string {
+  return serializeAttributes({ lang: 'zh-CN', ...(attributes ?? {}) });
 }
 
 function parsePixelDimension(value: string | null | undefined): number | undefined {
@@ -535,7 +550,7 @@ function normalizeBodyAsSingleSlide(doc: Document, sharedCss: string): SlideMode
     presentationMode: 'scroll'
   };
 
-  applySlideAttributes(root, slide, 0);
+  applyDocumentRootAttributes(root, slide);
 
   return {
     ...slide,
@@ -572,6 +587,7 @@ export function createDefaultProject(): ParsedProject {
       title: '未命名 HTML 演示材料',
       headExtras: '',
       bodyScripts: '',
+      htmlAttributes: { lang: 'zh-CN' },
       documentMode: false
     },
     slides: [
@@ -648,6 +664,7 @@ export function parseHtmlProject(rawHtml: string, sourceName?: string, filePath?
       sourceName,
       headExtras: collectHeadExtras(doc),
       bodyScripts: collectScripts(doc),
+      htmlAttributes: collectAttributes(doc.documentElement),
       bodyAttributes: collectAttributes(doc.body),
       documentMode
     },
@@ -698,7 +715,7 @@ function cleanDocumentStyle(style: string | null): string {
 function cleanDocumentMarkup(components: string): string {
   const doc = new DOMParser().parseFromString(components, 'text/html');
   removeRuntimeNodes(doc);
-  const root = (doc.querySelector('.deck-slide') || doc.body.firstElementChild) as HTMLElement | null;
+  const root = (doc.querySelector('[data-htmlppt-document-root]') || doc.querySelector('.deck-slide') || doc.body.firstElementChild) as HTMLElement | null;
   if (!root) return doc.body.innerHTML;
 
   const isSyntheticRoot = root.getAttribute('data-htmlppt-synthetic-root') === 'true';
@@ -708,6 +725,7 @@ function cleanDocumentMarkup(components: string): string {
   root.removeAttribute('data-canvas-height');
   root.removeAttribute('data-presentation-mode');
   root.removeAttribute('data-htmlppt-synthetic-root');
+  root.removeAttribute('data-htmlppt-document-root');
 
   if (root.classList.length === 0) root.removeAttribute('class');
 
@@ -722,10 +740,11 @@ function buildDocumentHtml(slides: SlideModel[], meta: ProjectMeta): string {
   const firstSlide = normalizeSlide(slides[0] ?? createBlankSlide('页面 1'));
   const body = cleanDocumentMarkup(firstSlide.components);
   const css = uniqueCss([firstSlide.css]);
+  const htmlAttrs = serializeHtmlAttributes(meta.htmlAttributes);
   const bodyAttrs = serializeAttributes(meta.bodyAttributes);
 
   return `<!doctype html>
-<html lang="zh-CN">
+<html ${htmlAttrs}>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -864,10 +883,11 @@ export function buildExportHtml(slides: SlideModel[], meta: ProjectMeta): string
   const normalizedSlides = slides.map(normalizeSlide);
   const body = normalizedSlides.map((slide, index) => ensureDeckSlideMarkup(slide.components, slide, index)).join('\n');
   const css = uniqueCss([EXPORT_BASE_CSS, ...normalizedSlides.map((slide) => slide.css)]);
+  const htmlAttrs = serializeHtmlAttributes(meta.htmlAttributes);
   const bodyAttrs = serializeAttributes(meta.bodyAttributes, 'htmlppt-deck is-fit-mode');
 
   return `<!doctype html>
-<html lang="zh-CN">
+<html ${htmlAttrs}>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -894,22 +914,28 @@ ${body}
 
 export function buildSlidePreviewDoc(slide: SlideModel, meta?: ProjectMeta): string {
   const normalized = normalizeSlide(slide);
-  const markup = ensureDeckSlideMarkup(normalized.components, normalized, 0);
   const width = getSlideCanvasWidth(normalized);
   const height = getSlideCanvasHeight(normalized);
   const bodyAttrs = serializeAttributes(meta?.bodyAttributes);
+  const htmlAttrs = serializeHtmlAttributes(meta?.htmlAttributes);
   const baseHref = baseDirToFileHref(meta?.baseDir);
+  const documentMode = meta?.documentMode === true;
+  const markup = documentMode ? normalized.components : ensureDeckSlideMarkup(normalized.components, normalized, 0);
+  const helperCss = documentMode
+    ? ''
+    : `${CANVAS_BASE_CSS}
+    html, body { width: ${width}px; height: ${height}px; overflow: hidden; background: #ffffff; }
+    .deck-slide { margin: 0; }`;
+
   return `<!doctype html>
-<html lang="zh-CN">
+<html ${htmlAttrs}>
 <head>
   <meta charset="UTF-8">
   ${baseHref ? `<base href="${escapeAttr(baseHref)}">` : ''}
   ${meta?.headExtras || ''}
   <style>
-    ${CANVAS_BASE_CSS}
     ${normalized.css}
-    html, body { width: ${width}px; height: ${height}px; overflow: hidden; background: #ffffff; }
-    .deck-slide { margin: 0; }
+    ${helperCss}
   </style>
 </head>
 <body ${bodyAttrs}>${markup}</body>

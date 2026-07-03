@@ -232,7 +232,7 @@ ipcMain.handle('project:present', async (_event, payload: PresentPayload) => {
     fullscreen: payload.fullscreen ?? true,
     autoHideMenuBar: true,
     title: '演示模式',
-    backgroundColor: '#111111',
+    backgroundColor: '#ffffff',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
