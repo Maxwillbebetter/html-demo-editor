@@ -361,6 +361,7 @@ export default function App() {
   const [canvasFitMode, setCanvasFitMode] = useState<CanvasFitMode>('width');
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [dropActive, setDropActive] = useState(false);
 
   const editorHostRef = useRef<HTMLDivElement | null>(null);
   const editorShellRef = useRef<HTMLDivElement | null>(null);
@@ -838,23 +839,84 @@ export default function App() {
     replaceProject(project.meta, project.slides);
   }, [confirmDiscard, replaceProject]);
 
+  const openImportedProject = useCallback(
+    (result: { html: string; name: string; filePath: string; baseDir: string }) => {
+      const parsed = parseHtmlProject(result.html, result.name, result.filePath, result.baseDir);
+      replaceProject(parsed.meta, parsed.slides);
+      notify(`已打开 ${result.name}`);
+    },
+    [notify, replaceProject]
+  );
+
   const handleOpenFile = useCallback(async () => {
     if (!confirmDiscard()) return;
     const result = await window.desktopBridge.openHtmlFile();
     if (!result) return;
-    const parsed = parseHtmlProject(result.html, result.name, result.filePath, result.baseDir);
-    replaceProject(parsed.meta, parsed.slides);
-    notify(`已打开 ${result.name}`);
-  }, [confirmDiscard, notify, replaceProject]);
+    openImportedProject(result);
+  }, [confirmDiscard, openImportedProject]);
 
   const handleOpenFolder = useCallback(async () => {
     if (!confirmDiscard()) return;
     const result = await window.desktopBridge.openProjectFolder();
     if (!result) return;
-    const parsed = parseHtmlProject(result.html, result.name, result.filePath, result.baseDir);
-    replaceProject(parsed.meta, parsed.slides);
-    notify(`已打开 ${result.name}`);
-  }, [confirmDiscard, notify, replaceProject]);
+    openImportedProject(result);
+  }, [confirmDiscard, openImportedProject]);
+
+  useEffect(() => {
+    let dragDepth = 0;
+
+    const isFileDrag = (event: DragEvent) => Array.from(event.dataTransfer?.types || []).includes('Files');
+
+    const handleDragEnter = (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      dragDepth += 1;
+      setDropActive(true);
+    };
+
+    const handleDragOver = (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+      setDropActive(true);
+    };
+
+    const handleDragLeave = (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) setDropActive(false);
+    };
+
+    const handleDrop = async (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      dragDepth = 0;
+      setDropActive(false);
+
+      const file = event.dataTransfer?.files?.[0];
+      const filePath = file ? window.desktopBridge.getPathForFile(file) : '';
+      if (!filePath) {
+        notify('没有拿到文件路径，请用“打开”按钮选择 HTML');
+        return;
+      }
+      if (!confirmDiscard()) return;
+
+      const result = await window.desktopBridge.openPath(filePath);
+      if (result) openImportedProject(result);
+    };
+
+    window.addEventListener('dragenter', handleDragEnter);
+    window.addEventListener('dragover', handleDragOver);
+    window.addEventListener('dragleave', handleDragLeave);
+    window.addEventListener('drop', handleDrop);
+    return () => {
+      window.removeEventListener('dragenter', handleDragEnter);
+      window.removeEventListener('dragover', handleDragOver);
+      window.removeEventListener('dragleave', handleDragLeave);
+      window.removeEventListener('drop', handleDrop);
+    };
+  }, [confirmDiscard, notify, openImportedProject]);
 
   const handleSave = useCallback(async () => {
     try {
@@ -1060,6 +1122,7 @@ export default function App() {
         currentSlideIdRef.current = blank.id;
         setDirty(true);
         loadSlideIntoEditor(blank);
+        notify('最后一页已清空为空白页');
         return;
       }
 
@@ -1074,7 +1137,7 @@ export default function App() {
         loadSlideIntoEditor(nextCurrent);
       }
     },
-    [commitCurrentSlide, loadSlideIntoEditor]
+    [commitCurrentSlide, loadSlideIntoEditor, notify]
   );
 
   const handleRenameSlide = useCallback((slideId: string, name: string) => {
@@ -1712,10 +1775,27 @@ export default function App() {
               <select
                 value={meta.documentMode ? 'document' : 'slides'}
                 onChange={(event) => {
-                  setMeta((current) => ({
-                    ...current,
-                    documentMode: event.target.value === 'document'
-                  }));
+                  const documentMode = event.target.value === 'document';
+                  setMeta((current) => {
+                    const next = {
+                      ...current,
+                      documentMode
+                    };
+                    metaRef.current = next;
+                    return next;
+                  });
+                  if (documentMode) {
+                    setGridEnabled(false);
+                    gridEnabledRef.current = false;
+                    setCanvasFitMode('width');
+                    canvasFitModeRef.current = 'width';
+                  }
+                  window.setTimeout(() => {
+                    const current = slidesRef.current.find((slide) => slide.id === currentSlideIdRef.current);
+                    if (current) updateCanvasDevice(current);
+                    syncCanvasHelpers();
+                    handleFitCanvas();
+                  }, 0);
                   setDirty(true);
                 }}
               >
@@ -1809,6 +1889,15 @@ export default function App() {
       </footer>
 
       <div id="hidden-gjs-panel" hidden />
+
+      {dropActive && (
+        <div className="drop-overlay" aria-label="拖拽打开文件">
+          <div>
+            <strong>释放打开 HTML</strong>
+            <span>支持 .html 文件或包含 index.html 的文件夹</span>
+          </div>
+        </div>
+      )}
 
       {contextMenu && (
         <div

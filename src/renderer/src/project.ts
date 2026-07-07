@@ -70,10 +70,9 @@ body {
   width: 100%;
   height: 100%;
   margin: 0;
-  background: #111111;
 }
 body.htmlppt-deck {
-  background: #111111;
+  background: var(--htmlppt-stage-background, #111111);
 }
 body.htmlppt-deck.is-fit-mode {
   overflow: hidden;
@@ -89,7 +88,6 @@ body.htmlppt-deck > .deck-slide {
   width: var(--htmlppt-slide-width, ${DEFAULT_CANVAS_WIDTH}px);
   min-height: var(--htmlppt-slide-height, ${DEFAULT_CANVAS_HEIGHT}px);
   margin: 0;
-  background: #ffffff;
   opacity: 0;
   pointer-events: none;
   visibility: hidden;
@@ -128,14 +126,14 @@ body.htmlppt-deck > .deck-slide * {
   transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
+  gap: 7px;
+  padding: 7px;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 8px;
   background: rgba(15, 18, 24, 0.72);
   color: #ffffff;
   font: 13px/1.2 "Segoe UI", Arial, sans-serif;
-  opacity: 0;
+  opacity: 0.82;
   transition: opacity 160ms ease;
   z-index: 1000;
 }
@@ -144,8 +142,9 @@ body.htmlppt-deck > .deck-slide * {
   opacity: 1;
 }
 .presenter-hud button {
-  width: 30px;
+  min-width: 30px;
   height: 28px;
+  padding: 0 8px;
   border: 0;
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.12);
@@ -154,6 +153,22 @@ body.htmlppt-deck > .deck-slide * {
 }
 .presenter-hud button:hover {
   background: rgba(255, 255, 255, 0.22);
+}
+.presenter-hud select {
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 7px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  font: inherit;
+}
+.presenter-hud select option {
+  color: #111827;
+}
+.presenter-scale-label {
+  min-width: 44px;
+  text-align: center;
 }
 .presenter-blank {
   position: fixed;
@@ -169,9 +184,51 @@ body.htmlppt-deck > .deck-slide * {
   display: block;
   background: #ffffff;
 }
+.presenter-laser-dot {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 998;
+  display: none;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border-radius: 999px;
+  background: rgba(239, 68, 68, 0.94);
+  box-shadow: 0 0 0 8px rgba(239, 68, 68, 0.18), 0 0 22px rgba(239, 68, 68, 0.72);
+  pointer-events: none;
+}
+.presenter-ink-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: 997;
+  pointer-events: none;
+}
+body.htmlppt-pointer-hidden,
+body.htmlppt-pointer-hidden *,
+body.htmlppt-pointer-laser,
+body.htmlppt-pointer-laser *,
+body.htmlppt-pointer-auto.htmlppt-pointer-idle,
+body.htmlppt-pointer-auto.htmlppt-pointer-idle * {
+  cursor: none !important;
+}
+body.htmlppt-pointer-pen,
+body.htmlppt-pointer-pen * {
+  cursor: crosshair !important;
+}
+.presenter-hud,
+.presenter-hud * {
+  cursor: default !important;
+}
+body.htmlppt-pointer-laser .presenter-laser-dot {
+  display: block;
+}
 `;
 
 const DEFAULT_SLIDE_CSS = `
+.deck-slide {
+  background: #ffffff;
+}
 .cover-kicker {
   position: absolute;
   left: 72px;
@@ -569,13 +626,7 @@ export function createBlankSlide(name = '新页面'): SlideModel {
     canvasWidth: DEFAULT_CANVAS_WIDTH,
     canvasHeight: DEFAULT_CANVAS_HEIGHT,
     presentationMode: 'fit',
-    components: `<section class="deck-slide" data-slide-id="${id}" aria-label="${escapeAttr(name)}">
-  <h1 class="slide-heading">${escapeHtml(name)}</h1>
-  <div class="two-col-text">
-    <div class="text-block">双击这里编辑正文内容。可以拖动模块、调整尺寸，并在右侧修改样式。</div>
-    <div class="text-block">从左侧组件库拖入标题、图片、指标卡、表格或时间线。</div>
-  </div>
-</section>`,
+    components: `<section class="deck-slide" data-slide-id="${id}" aria-label="${escapeAttr(name)}"></section>`,
     css: DEFAULT_SLIDE_CSS
   };
 }
@@ -772,7 +823,17 @@ function presenterRuntime(): string {
   const slides = Array.from(document.querySelectorAll('body.htmlppt-deck > .deck-slide'));
   const counter = document.querySelector('[data-page-counter]');
   const blank = document.querySelector('[data-presenter-blank]');
+  const scaleLabel = document.querySelector('[data-scale-label]');
+  const pointerSelect = document.querySelector('[data-pointer-mode]');
+  const laser = document.querySelector('[data-presenter-laser]');
+  const ink = document.querySelector('[data-presenter-ink]');
+  const inkContext = ink?.getContext?.('2d');
   let index = 0;
+  let scaleMode = 'auto';
+  let manualScale = 1;
+  let pointerMode = 'auto';
+  let idleTimer = 0;
+  let drawing = false;
 
   function slideSize(slide) {
     return {
@@ -783,6 +844,16 @@ function presenterRuntime(): string {
 
   function currentMode() {
     return slides[index]?.dataset.presentationMode === 'scroll' ? 'scroll' : 'fit';
+  }
+
+  function scaleFor(slide) {
+    const mode = currentMode();
+    const size = slideSize(slide);
+    if (scaleMode === 'actual') return 1;
+    if (scaleMode === 'manual') return manualScale;
+    if (scaleMode === 'width') return window.innerWidth / size.width;
+    if (mode === 'scroll') return window.innerWidth / size.width;
+    return Math.min(window.innerWidth / size.width, window.innerHeight / size.height);
   }
 
   function setDeckMode() {
@@ -797,11 +868,9 @@ function presenterRuntime(): string {
     const slide = slides[index];
     if (!slide) return;
     const mode = currentMode();
-    const size = slideSize(slide);
-    const scale = mode === 'scroll'
-      ? window.innerWidth / size.width
-      : Math.min(window.innerWidth / size.width, window.innerHeight / size.height);
+    const scale = Math.max(0.1, Math.min(4, scaleFor(slide)));
     document.documentElement.style.setProperty('--deck-scale', String(scale));
+    if (scaleLabel) scaleLabel.textContent = String(Math.round(scale * 100)) + '%';
     if (mode === 'scroll') {
       const extra = Math.max(0, slide.scrollHeight * (scale - 1));
       slide.style.marginBottom = extra ? String(extra) + 'px' : '';
@@ -821,6 +890,17 @@ function presenterRuntime(): string {
     resize();
   }
 
+  function setScaleMode(nextMode) {
+    scaleMode = nextMode;
+    resize();
+  }
+
+  function stepScale(delta) {
+    const slide = slides[index];
+    manualScale = Math.max(0.1, Math.min(4, scaleFor(slide) + delta));
+    setScaleMode('manual');
+  }
+
   function clearBlank() {
     blank?.classList.remove('is-black', 'is-white');
   }
@@ -833,9 +913,76 @@ function presenterRuntime(): string {
     if (!wasActive) blank.classList.add(className);
   }
 
+  function resizeInk() {
+    if (!ink || !inkContext) return;
+    const ratio = window.devicePixelRatio || 1;
+    ink.width = Math.floor(window.innerWidth * ratio);
+    ink.height = Math.floor(window.innerHeight * ratio);
+    ink.style.width = window.innerWidth + 'px';
+    ink.style.height = window.innerHeight + 'px';
+    inkContext.setTransform(ratio, 0, 0, ratio, 0, 0);
+    inkContext.lineWidth = 3;
+    inkContext.lineCap = 'round';
+    inkContext.lineJoin = 'round';
+    inkContext.strokeStyle = '#ef4444';
+  }
+
+  function setPointerMode(mode) {
+    pointerMode = mode;
+    deck.classList.remove(
+      'htmlppt-pointer-auto',
+      'htmlppt-pointer-hidden',
+      'htmlppt-pointer-laser',
+      'htmlppt-pointer-pen',
+      'htmlppt-pointer-idle'
+    );
+    deck.classList.add('htmlppt-pointer-' + pointerMode);
+    if (laser) laser.style.display = pointerMode === 'laser' ? 'block' : '';
+    if (pointerSelect) pointerSelect.value = pointerMode;
+  }
+
+  function markPointerActive() {
+    if (pointerMode !== 'auto') return;
+    deck.classList.remove('htmlppt-pointer-idle');
+    window.clearTimeout(idleTimer);
+    idleTimer = window.setTimeout(() => deck.classList.add('htmlppt-pointer-idle'), 1800);
+  }
+
   document.querySelector('[data-prev-slide]')?.addEventListener('click', () => show(index - 1));
   document.querySelector('[data-next-slide]')?.addEventListener('click', () => show(index + 1));
-  window.addEventListener('resize', resize);
+  document.querySelector('[data-exit-presentation]')?.addEventListener('click', () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    window.close();
+  });
+  document.querySelector('[data-scale-out]')?.addEventListener('click', () => stepScale(-0.1));
+  document.querySelector('[data-scale-in]')?.addEventListener('click', () => stepScale(0.1));
+  document.querySelector('[data-scale-fit]')?.addEventListener('click', () => setScaleMode('auto'));
+  document.querySelector('[data-scale-width]')?.addEventListener('click', () => setScaleMode('width'));
+  document.querySelector('[data-scale-actual]')?.addEventListener('click', () => setScaleMode('actual'));
+  document.querySelector('[data-clear-ink]')?.addEventListener('click', () => inkContext?.clearRect(0, 0, ink?.width || 0, ink?.height || 0));
+  pointerSelect?.addEventListener('change', (event) => setPointerMode(event.target.value));
+
+  window.addEventListener('resize', () => {
+    resize();
+    resizeInk();
+  });
+  window.addEventListener('pointermove', (event) => {
+    markPointerActive();
+    if (laser) laser.style.transform = 'translate(' + event.clientX + 'px,' + event.clientY + 'px)';
+    if (pointerMode === 'pen' && drawing && inkContext) {
+      inkContext.lineTo(event.clientX, event.clientY);
+      inkContext.stroke();
+    }
+  });
+  window.addEventListener('pointerdown', (event) => {
+    if (pointerMode !== 'pen' || !inkContext) return;
+    drawing = true;
+    inkContext.beginPath();
+    inkContext.moveTo(event.clientX, event.clientY);
+  });
+  window.addEventListener('pointerup', () => {
+    drawing = false;
+  });
   window.addEventListener('keydown', (event) => {
     const key = event.key.toLowerCase();
     const mode = currentMode();
@@ -868,6 +1015,9 @@ function presenterRuntime(): string {
     if (key === 'end') show(slides.length - 1);
     if (key === 'b' || key === '.') toggleBlank('black');
     if (key === 'w' || key === ',') toggleBlank('white');
+    if ((event.metaKey || event.ctrlKey) && key === '=') stepScale(0.1);
+    if ((event.metaKey || event.ctrlKey) && key === '-') stepScale(-0.1);
+    if ((event.metaKey || event.ctrlKey) && key === '0') setScaleMode('actual');
     if (key === 'escape') {
       if (document.fullscreenElement) document.exitFullscreen();
       else window.close();
@@ -875,6 +1025,9 @@ function presenterRuntime(): string {
   });
 
   const hashMatch = location.hash.match(/#\\/(\\d+)/);
+  resizeInk();
+  setPointerMode('auto');
+  markPointerActive();
   show(hashMatch ? Number(hashMatch[1]) - 1 : 0);
 })();
 </script>`;
@@ -908,7 +1061,24 @@ ${body}
     <button type="button" data-prev-slide aria-label="上一页">‹</button>
     <span data-page-counter>1 / ${normalizedSlides.length}</span>
     <button type="button" data-next-slide aria-label="下一页">›</button>
+    <button type="button" data-scale-out aria-label="缩小">-</button>
+    <span class="presenter-scale-label" data-scale-label>100%</span>
+    <button type="button" data-scale-in aria-label="放大">+</button>
+    <button type="button" data-scale-width aria-label="适配宽度">宽</button>
+    <button type="button" data-scale-fit aria-label="适配整屏">全</button>
+    <button type="button" data-scale-actual aria-label="原始比例">100%</button>
+    <select data-pointer-mode aria-label="指针">
+      <option value="auto">自动</option>
+      <option value="arrow">箭头</option>
+      <option value="hidden">隐藏</option>
+      <option value="laser">激光</option>
+      <option value="pen">画笔</option>
+    </select>
+    <button type="button" data-clear-ink aria-label="清除笔迹">清除</button>
+    <button type="button" data-exit-presentation aria-label="退出演示">退出</button>
   </div>
+  <div class="presenter-laser-dot" data-presenter-laser data-htmlppt-runtime></div>
+  <canvas class="presenter-ink-canvas" data-presenter-ink data-htmlppt-runtime></canvas>
   ${meta.bodyScripts || ''}
   ${presenterRuntime()}
 </body>

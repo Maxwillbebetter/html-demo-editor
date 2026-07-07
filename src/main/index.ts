@@ -79,6 +79,18 @@ async function readHtmlFile(filePath: string) {
   };
 }
 
+async function readProjectPath(filePath: string) {
+  const fileStat = await stat(filePath);
+  if (fileStat.isDirectory()) {
+    const entry = await findHtmlEntry(filePath);
+    if (!entry) return null;
+    return readHtmlFile(entry);
+  }
+
+  if (!['.html', '.htm'].includes(extname(filePath).toLowerCase())) return null;
+  return readHtmlFile(filePath);
+}
+
 async function findHtmlEntry(folderPath: string): Promise<string | null> {
   const preferred = join(folderPath, 'index.html');
   try {
@@ -91,6 +103,277 @@ async function findHtmlEntry(folderPath: string): Promise<string | null> {
   const entries = await readdir(folderPath);
   const htmlFile = entries.find((entry) => ['.html', '.htm'].includes(extname(entry).toLowerCase()));
   return htmlFile ? join(folderPath, htmlFile) : null;
+}
+
+function withPreviewShell(html: string): string {
+  if (/data-htmlppt-runtime/i.test(html) || /data-html-demo-preview-shell/i.test(html)) return html;
+
+  const shellStyle = `<style data-html-demo-preview-shell>
+.html-demo-preview-toolbar,
+.html-demo-preview-toolbar * {
+  box-sizing: border-box;
+  font-family: "Segoe UI", Arial, sans-serif;
+}
+.html-demo-preview-toolbar {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px;
+  border: 1px solid rgba(15, 23, 42, 0.15);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #18202b;
+  box-shadow: 0 14px 38px rgba(15, 23, 42, 0.18);
+  opacity: 0.78;
+  transition: opacity 140ms ease;
+}
+.html-demo-preview-toolbar:hover,
+.html-demo-preview-toolbar:focus-within {
+  opacity: 1;
+}
+.html-demo-preview-toolbar button,
+.html-demo-preview-toolbar select {
+  height: 30px;
+  border: 1px solid #d6dde4;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #26313f;
+  font: 13px/1 "Segoe UI", Arial, sans-serif;
+}
+.html-demo-preview-toolbar button {
+  min-width: 34px;
+  padding: 0 9px;
+  cursor: pointer;
+}
+.html-demo-preview-toolbar button:hover {
+  border-color: #0f766e;
+  color: #0f766e;
+}
+.html-demo-preview-toolbar select {
+  padding: 0 8px;
+}
+.html-demo-preview-scale {
+  min-width: 46px;
+  text-align: center;
+  color: #475569;
+  font: 13px/1 "Segoe UI", Arial, sans-serif;
+}
+.html-demo-preview-laser {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 2147483646;
+  display: none;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border-radius: 999px;
+  background: rgba(239, 68, 68, 0.92);
+  box-shadow: 0 0 0 8px rgba(239, 68, 68, 0.18), 0 0 22px rgba(239, 68, 68, 0.7);
+  pointer-events: none;
+}
+.html-demo-preview-ink {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483645;
+  pointer-events: none;
+}
+html.html-demo-preview-pointer-hidden,
+html.html-demo-preview-pointer-hidden * ,
+html.html-demo-preview-pointer-laser,
+html.html-demo-preview-pointer-laser * ,
+html.html-demo-preview-pointer-auto.html-demo-preview-pointer-idle,
+html.html-demo-preview-pointer-auto.html-demo-preview-pointer-idle * {
+  cursor: none !important;
+}
+html.html-demo-preview-pointer-pen,
+html.html-demo-preview-pointer-pen * {
+  cursor: crosshair !important;
+}
+.html-demo-preview-toolbar,
+.html-demo-preview-toolbar * {
+  cursor: default !important;
+}
+html.html-demo-preview-pointer-laser .html-demo-preview-laser {
+  display: block;
+}
+</style>`;
+
+  const shellScript = `<script data-html-demo-preview-shell>
+(() => {
+  if (window.__htmlDemoPreviewShell) return;
+  window.__htmlDemoPreviewShell = true;
+
+  const root = document.documentElement;
+  const body = document.body;
+  if (!body) return;
+
+  let zoom = 1;
+  let pointerMode = 'auto';
+  let idleTimer = 0;
+  let drawing = false;
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'html-demo-preview-toolbar';
+  toolbar.innerHTML = [
+    '<button type="button" data-preview-action="zoom-out" title="缩小">-</button>',
+    '<span class="html-demo-preview-scale" data-preview-scale>100%</span>',
+    '<button type="button" data-preview-action="zoom-in" title="放大">+</button>',
+    '<button type="button" data-preview-action="fit-width" title="适配宽度">宽</button>',
+    '<button type="button" data-preview-action="fit-screen" title="适配整屏">全</button>',
+    '<button type="button" data-preview-action="actual" title="原始比例">100%</button>',
+    '<select data-preview-pointer title="指针"><option value="auto">自动</option><option value="arrow">箭头</option><option value="hidden">隐藏</option><option value="laser">激光</option><option value="pen">画笔</option></select>',
+    '<button type="button" data-preview-action="clear-ink" title="清除笔迹">清除</button>',
+    '<button type="button" data-preview-action="exit" title="退出">退出</button>'
+  ].join('');
+
+  const laser = document.createElement('div');
+  laser.className = 'html-demo-preview-laser';
+  const ink = document.createElement('canvas');
+  ink.className = 'html-demo-preview-ink';
+  body.append(toolbar, laser, ink);
+
+  const scaleLabel = toolbar.querySelector('[data-preview-scale]');
+  const pointerSelect = toolbar.querySelector('[data-preview-pointer]');
+  const context = ink.getContext('2d');
+
+  function resizeInk() {
+    const ratio = window.devicePixelRatio || 1;
+    ink.width = Math.floor(window.innerWidth * ratio);
+    ink.height = Math.floor(window.innerHeight * ratio);
+    ink.style.width = window.innerWidth + 'px';
+    ink.style.height = window.innerHeight + 'px';
+    if (context) {
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      context.lineWidth = 3;
+      context.lineCap = 'round';
+      context.lineJoin = 'round';
+      context.strokeStyle = '#ef4444';
+    }
+  }
+
+  function setZoom(nextZoom) {
+    zoom = Math.max(0.25, Math.min(3, Number(nextZoom) || 1));
+    body.style.zoom = String(zoom);
+    toolbar.style.zoom = String(1 / zoom);
+    laser.style.zoom = String(1 / zoom);
+    ink.style.zoom = String(1 / zoom);
+    if (scaleLabel) scaleLabel.textContent = Math.round(zoom * 100) + '%';
+  }
+
+  function measureAtActualZoom(callback) {
+    const previousZoom = zoom;
+    setZoom(1);
+    requestAnimationFrame(() => {
+      callback();
+      if (Math.abs(zoom - 1) < 0.001 && previousZoom !== 1) setZoom(previousZoom);
+    });
+  }
+
+  function fitWidth() {
+    measureAtActualZoom(() => {
+      const width = Math.max(document.body.scrollWidth, document.documentElement.scrollWidth, 1);
+      setZoom(window.innerWidth / width);
+    });
+  }
+
+  function fitScreen() {
+    measureAtActualZoom(() => {
+      const width = Math.max(document.body.scrollWidth, document.documentElement.scrollWidth, 1);
+      const height = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight, 1);
+      setZoom(Math.min(window.innerWidth / width, window.innerHeight / height));
+    });
+  }
+
+  function setPointerMode(mode) {
+    pointerMode = mode;
+    root.classList.remove(
+      'html-demo-preview-pointer-auto',
+      'html-demo-preview-pointer-hidden',
+      'html-demo-preview-pointer-laser',
+      'html-demo-preview-pointer-pen',
+      'html-demo-preview-pointer-idle'
+    );
+    root.classList.add('html-demo-preview-pointer-' + pointerMode);
+    laser.style.display = pointerMode === 'laser' ? 'block' : '';
+    if (pointerSelect) pointerSelect.value = pointerMode;
+  }
+
+  function markPointerActive() {
+    if (pointerMode !== 'auto') return;
+    root.classList.remove('html-demo-preview-pointer-idle');
+    window.clearTimeout(idleTimer);
+    idleTimer = window.setTimeout(() => root.classList.add('html-demo-preview-pointer-idle'), 1800);
+  }
+
+  toolbar.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-preview-action]');
+    if (!button) return;
+    const action = button.getAttribute('data-preview-action');
+    if (action === 'zoom-out') setZoom(zoom - 0.1);
+    if (action === 'zoom-in') setZoom(zoom + 0.1);
+    if (action === 'fit-width') fitWidth();
+    if (action === 'fit-screen') fitScreen();
+    if (action === 'actual') setZoom(1);
+    if (action === 'clear-ink') {
+      context?.clearRect(0, 0, ink.width, ink.height);
+    }
+    if (action === 'exit') {
+      if (document.fullscreenElement) document.exitFullscreen();
+      window.close();
+    }
+  });
+
+  pointerSelect?.addEventListener('change', (event) => setPointerMode(event.target.value));
+  window.addEventListener('resize', resizeInk);
+  window.addEventListener('pointermove', (event) => {
+    markPointerActive();
+    laser.style.transform = 'translate(' + event.clientX + 'px,' + event.clientY + 'px)';
+    if (pointerMode === 'pen' && drawing && context) {
+      context.lineTo(event.clientX, event.clientY);
+      context.stroke();
+    }
+  });
+  window.addEventListener('pointerdown', (event) => {
+    if (pointerMode !== 'pen' || !context) return;
+    drawing = true;
+    context.beginPath();
+    context.moveTo(event.clientX, event.clientY);
+  });
+  window.addEventListener('pointerup', () => {
+    drawing = false;
+  });
+  window.addEventListener('keydown', (event) => {
+    const key = event.key.toLowerCase();
+    if (key === 'escape') {
+      event.preventDefault();
+      if (document.fullscreenElement) document.exitFullscreen();
+      window.close();
+    }
+    if ((event.metaKey || event.ctrlKey) && key === '=') setZoom(zoom + 0.1);
+    if ((event.metaKey || event.ctrlKey) && key === '-') setZoom(zoom - 0.1);
+    if ((event.metaKey || event.ctrlKey) && key === '0') setZoom(1);
+  });
+
+  resizeInk();
+  setPointerMode('auto');
+  markPointerActive();
+})();
+</script>`;
+
+  const withStyle = /<\/head>/i.test(html)
+    ? html.replace(/<\/head>/i, `${shellStyle}</head>`)
+    : `<!doctype html><html><head>${shellStyle}</head><body>${html}</body></html>`;
+
+  if (/<\/body>/i.test(withStyle)) {
+    return withStyle.replace(/<\/body>/i, `${shellScript}</body>`);
+  }
+
+  return `${withStyle}${shellScript}`;
 }
 
 async function chooseSavePath(defaultName = 'demo-material.html'): Promise<string | null> {
@@ -160,6 +443,24 @@ ipcMain.handle('project:open-folder', async () => {
   return readHtmlFile(entry);
 });
 
+ipcMain.handle('project:open-path', async (_event, filePath: string) => {
+  try {
+    const result = await readProjectPath(filePath);
+    if (result) return result;
+  } catch {
+    // Fall through to the user-facing warning below.
+  }
+
+  const options: MessageBoxOptions = {
+    type: 'warning',
+    title: '无法打开',
+    message: '请拖入 .html 文件，或包含 index.html 的文件夹。'
+  };
+  if (mainWindow) await dialog.showMessageBox(mainWindow, options);
+  else await dialog.showMessageBox(options);
+  return null;
+});
+
 ipcMain.handle('project:save', async (_event, payload: SavePayload) => {
   const filePath = payload.filePath ?? (await chooseSavePath(payload.defaultName));
   if (!filePath) return null;
@@ -220,7 +521,7 @@ ipcMain.handle('project:present', async (_event, payload: PresentPayload) => {
     () => join(tmpdir(), 'html-demo-editor-presenter')
   );
   const presentPath = join(tempDir, 'index.html');
-  await writeFile(presentPath, withBaseHref(payload.html, payload.baseDir), 'utf8');
+  await writeFile(presentPath, withPreviewShell(withBaseHref(payload.html, payload.baseDir)), 'utf8');
 
   if (presenterWindow && !presenterWindow.isDestroyed()) {
     presenterWindow.close();
@@ -242,6 +543,12 @@ ipcMain.handle('project:present', async (_event, payload: PresentPayload) => {
 
   presenterWindow.on('closed', () => {
     presenterWindow = null;
+  });
+  presenterWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'Escape' && presenterWindow && !presenterWindow.isDestroyed()) {
+      event.preventDefault();
+      presenterWindow.close();
+    }
   });
 
   await presenterWindow.loadFile(presentPath);

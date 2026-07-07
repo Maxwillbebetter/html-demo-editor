@@ -104,6 +104,10 @@ assert(slidesParsed.meta.documentMode === false, 'explicit data-slide sections s
 assert(slidesParsed.slides.length === 2, 'explicit slides should keep multiple pages');
 assert(slidesExport.includes('htmlppt-deck'), 'slide export should include deck runtime');
 assert(slidesExport.includes('data-htmlppt-runtime'), 'slide export should include presenter runtime');
+assert(slidesExport.includes('data-exit-presentation'), 'slide export should include an explicit presenter exit button');
+assert(slidesExport.includes('data-scale-width') && slidesExport.includes('data-scale-fit'), 'slide export should include presenter scale controls');
+assert(slidesExport.includes('data-pointer-mode') && slidesExport.includes('presenter-laser-dot'), 'slide export should include pointer mode controls');
+assert(!/html,\s*body\s*\{[^}]*background:/m.test(slidesExport), 'deck runtime should not force a global html/body background color');
 
 window.__SMOKE_RESULT = { ok: failures.length === 0, failures };
 console.log('SMOKE_RESULT:' + JSON.stringify(window.__SMOKE_RESULT));

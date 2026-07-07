@@ -40,6 +40,8 @@ export interface ExportPayload {
 export interface DesktopBridge {
   openHtmlFile(): Promise<OpenProjectResult | null>;
   openProjectFolder(): Promise<OpenProjectResult | null>;
+  openPath(filePath: string): Promise<OpenProjectResult | null>;
+  getPathForFile(file: File): string;
   saveProject(payload: SavePayload): Promise<SaveResult | null>;
   saveProjectAs(payload: SavePayload): Promise<SaveResult | null>;
   exportPackage(payload: ExportPayload): Promise<SaveResult | null>;

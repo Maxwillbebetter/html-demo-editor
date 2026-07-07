@@ -124,6 +124,13 @@ app.whenReady().then(async () => {
       }
       if (count('.slide-row') !== 1) failures.push('deleting the last page should leave one editable page');
       if (!document.body.innerText.includes('新页面')) failures.push('last page delete should create a blank page');
+      const lastFrameDoc = document.querySelector('.gjs-frame')?.contentDocument;
+      const lastSlide = lastFrameDoc?.querySelector('.deck-slide');
+      if (!lastSlide) failures.push('last page delete should keep an editable deck-slide root');
+      if (lastSlide && lastSlide.children.length !== 0) failures.push('last page delete should create a truly blank canvas');
+      if (lastFrameDoc?.body.innerText.includes('双击这里编辑正文内容')) {
+        failures.push('blank canvas should not keep starter instruction content');
+      }
 
       return { ok: failures.length === 0, failures };
     })()
