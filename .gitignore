@@ -3,6 +3,8 @@ out/
 release/
 dist/
 .audit/
+.playwright-cli/
+output/
 .DS_Store
 *.log
 npm-debug.log*
