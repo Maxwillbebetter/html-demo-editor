@@ -1,16 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import grapesjs, { type Component, type Editor } from 'grapesjs';
+import grapesjs, { type Component, type Editor, type ResizerOptions } from 'grapesjs';
 import basicBlocks from 'grapesjs-blocks-basic';
 import {
+  AlignCenterHorizontal,
+  AlignCenterVertical,
+  AlignEndHorizontal,
+  AlignEndVertical,
+  AlignHorizontalSpaceBetween,
+  AlignStartHorizontal,
+  AlignStartVertical,
+  AlignVerticalSpaceBetween,
   Bold,
   BringToFront,
   Code2,
   Copy,
   Download,
+  Eye,
+  EyeOff,
+  FileClock,
   FilePlus2,
   FolderOpen,
+  Group,
   Image,
   Italic,
+  Layers2,
   Maximize2,
   MonitorPlay,
   PaintBucket,
@@ -26,6 +39,7 @@ import {
   Trash2,
   Type,
   Undo2,
+  Ungroup,
   Underline,
   ZoomIn,
   ZoomOut
@@ -50,8 +64,25 @@ import {
   type ProjectMeta,
   type SlideModel
 } from './project';
+import type { AutoSaveRecord } from './types';
 
 const CURRENT_DEVICE_ID = 'current-page';
+const ELEMENT_RESIZER_OPTIONS: ResizerOptions = {
+  tl: true,
+  tc: true,
+  tr: true,
+  cl: true,
+  cr: true,
+  bl: true,
+  bc: true,
+  br: true,
+  minDim: 8,
+  step: 1,
+  currentUnit: true,
+  updateOnMove: true,
+  keepAutoHeight: true,
+  keepAutoWidth: true
+};
 const TEXT_COLOR_SWATCHES = ['#111827', '#374151', '#ffffff', '#0f766e', '#2563eb', '#7c3aed', '#d9852b', '#dc2626'];
 const FILL_COLOR_SWATCHES = ['#ffffff', '#f8fafc', '#eef7f6', '#fff7ed', '#eff6ff', '#f5f3ff', '#111827', '#0f766e'];
 const FONT_OPTIONS = [
@@ -61,10 +92,15 @@ const FONT_OPTIONS = [
   { label: '宋体', value: 'SimSun, serif' },
   { label: '等宽', value: '"Cascadia Code", Consolas, monospace' }
 ];
+const SNAP_THRESHOLD = 6;
+const RECENT_FILE_LIMIT = 8;
 
 type LeftTab = 'slides' | 'blocks';
 type RightTab = 'style' | 'layers' | 'page';
 type CanvasFitMode = 'fit' | 'width';
+type AlignAction = 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom';
+type DistributeAction = 'horizontal' | 'vertical';
+type GuideMatch = { diff: number; target: keyof BoxMetrics; value: number };
 
 interface SelectedSummary {
   label: string;
@@ -93,6 +129,39 @@ interface ContextMenuState {
   label: string;
   isImage: boolean;
   canEditText: boolean;
+  summary: SelectedSummary;
+}
+
+interface ComponentSelectionItem {
+  key: string;
+  label: string;
+}
+
+interface LayerItem {
+  key: string;
+  label: string;
+  tag: string;
+  depth: number;
+  hidden: boolean;
+  group: boolean;
+}
+
+interface RecentFile {
+  filePath: string;
+  name: string;
+  baseDir: string;
+  openedAt: string;
+}
+
+interface BoxMetrics {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  right: number;
+  bottom: number;
+  centerX: number;
+  centerY: number;
 }
 
 function dirnameFromPath(filePath?: string): string | undefined {
@@ -155,35 +224,59 @@ function normalizeCssValue(property: string, value: string): string {
   return trimmed;
 }
 
-function summarizeSelected(editor: Editor): SelectedSummary | null {
-  const selected = editor.getSelected();
-  if (!selected) return null;
+function pickStyleValue(inlineValue: unknown, computedValue: string, fallback = ''): string | undefined {
+  const value = stringStyleValue(inlineValue);
+  if (value && value !== 'auto') return value;
+  if (computedValue && computedValue !== 'auto' && computedValue !== 'normal') return computedValue;
+  return fallback || undefined;
+}
 
-  const attrs = selected.getAttributes();
-  const style = selected.getStyle();
-  const tagName = String(selected.get('tagName') || selected.getName() || 'element').toLowerCase();
-  const classes = selected.getClasses().join(' ');
+function summarizeComponent(component: Component): SelectedSummary {
+  const attrs = component.getAttributes();
+  const style = component.getStyle();
+  const element = component.getEl?.() as HTMLElement | undefined;
+  const win = element?.ownerDocument.defaultView;
+  const computed = element && win ? win.getComputedStyle(element) : null;
+  const rect = element?.getBoundingClientRect();
+  const parentRect = element?.offsetParent instanceof HTMLElement ? element.offsetParent.getBoundingClientRect() : null;
+  const tagName = String(component.get('tagName') || component.getName() || 'element').toLowerCase();
+  const classes = component.getClasses().join(' ');
+  const left = pickStyleValue(
+    style.left,
+    computed?.left || '',
+    rect && parentRect ? `${Math.round(rect.left - parentRect.left)}px` : ''
+  );
+  const top = pickStyleValue(
+    style.top,
+    computed?.top || '',
+    rect && parentRect ? `${Math.round(rect.top - parentRect.top)}px` : ''
+  );
 
   return {
     label: tagName,
     id: attrs.id,
     classes,
-    width: stringStyleValue(style.width),
-    height: stringStyleValue(style.height),
-    left: stringStyleValue(style.left),
-    top: stringStyleValue(style.top),
-    zIndex: stringStyleValue(style['z-index']),
-    fontFamily: stringStyleValue(style['font-family']),
-    fontSize: stringStyleValue(style['font-size']),
-    fontWeight: stringStyleValue(style['font-weight']),
-    fontStyle: stringStyleValue(style['font-style']),
-    color: stringStyleValue(style.color),
-    backgroundColor: stringStyleValue(style['background-color']),
-    textDecoration: stringStyleValue(style['text-decoration']),
-    borderRadius: stringStyleValue(style['border-radius']),
-    opacity: stringStyleValue(style.opacity),
-    isImage: tagName === 'img' || selected.is('image')
+    width: pickStyleValue(style.width, computed?.width || '', rect ? `${Math.round(rect.width)}px` : ''),
+    height: pickStyleValue(style.height, computed?.height || '', rect ? `${Math.round(rect.height)}px` : ''),
+    left,
+    top,
+    zIndex: pickStyleValue(style['z-index'], computed?.zIndex || ''),
+    fontFamily: pickStyleValue(style['font-family'], computed?.fontFamily || ''),
+    fontSize: pickStyleValue(style['font-size'], computed?.fontSize || ''),
+    fontWeight: pickStyleValue(style['font-weight'], computed?.fontWeight || ''),
+    fontStyle: pickStyleValue(style['font-style'], computed?.fontStyle || ''),
+    color: pickStyleValue(style.color, computed?.color || ''),
+    backgroundColor: pickStyleValue(style['background-color'], computed?.backgroundColor || ''),
+    textDecoration: pickStyleValue(style['text-decoration'], computed?.textDecorationLine || computed?.textDecoration || ''),
+    borderRadius: pickStyleValue(style['border-radius'], computed?.borderRadius || ''),
+    opacity: pickStyleValue(style.opacity, computed?.opacity || ''),
+    isImage: tagName === 'img' || component.is('image')
   };
+}
+
+function summarizeSelected(editor: Editor): SelectedSummary | null {
+  const selected = editor.getSelected();
+  return selected ? summarizeComponent(selected) : null;
 }
 
 function cssNumber(value: string | undefined, fallback: number): number {
@@ -203,6 +296,322 @@ function cssColorInputValue(value: string | undefined, fallback: string): string
   return fallback;
 }
 
+function componentKey(component: Component): string {
+  const model = component as Component & { ccid?: string; cid?: string };
+  return model.ccid || model.cid || component.getId() || component.getName();
+}
+
+function componentContains(parent: Component | null | undefined, child: Component | null | undefined): boolean {
+  if (!parent || !child || parent === child) return false;
+  try {
+    return parent.contains(child);
+  } catch {
+    return false;
+  }
+}
+
+function isRootLikeComponent(component: Component | null | undefined): boolean {
+  if (!component) return true;
+  if (typeof component.get !== 'function') return true;
+  const tagName = String(component.get('tagName') || component.getName() || '').toLowerCase();
+  const element = component.getEl?.();
+  return component.get('type') === 'wrapper' || tagName === 'body' || element?.classList?.contains('deck-slide') === true;
+}
+
+function componentDisplayName(component: Component): string {
+  const attrs = component.getAttributes();
+  const tagName = String(component.get('tagName') || component.getName() || 'element').toLowerCase();
+  const explicitName = String(component.getName?.({ noCustom: false }) || '').trim();
+  const aria = typeof attrs['aria-label'] === 'string' ? attrs['aria-label'].trim() : '';
+  const text = component
+    .getEl?.()
+    ?.textContent?.replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 26);
+  if (aria && aria !== tagName) return aria;
+  if (explicitName && explicitName !== tagName && !/^div$/i.test(explicitName)) return explicitName;
+  if (text) return text;
+  if (attrs.id) return `#${attrs.id}`;
+  const classes = component.getClasses().slice(0, 2).join('.');
+  return classes ? `${tagName}.${classes}` : tagName;
+}
+
+function getCanvasRootElement(editor: Editor): HTMLElement | null {
+  const doc = editor.Canvas.getDocument();
+  return (
+    (doc?.querySelector('.deck-slide') as HTMLElement | null) ||
+    (doc?.querySelector('[data-htmlppt-document-root]') as HTMLElement | null) ||
+    doc?.body ||
+    null
+  );
+}
+
+function getComponentBox(component: Component, rootEl: HTMLElement): BoxMetrics | null {
+  const element = component.getEl?.();
+  if (!element) return null;
+  const rect = element.getBoundingClientRect();
+  const rootRect = rootEl.getBoundingClientRect();
+  const left = rect.left - rootRect.left;
+  const top = rect.top - rootRect.top;
+  const width = rect.width;
+  const height = rect.height;
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    centerX: left + width / 2,
+    centerY: top + height / 2
+  };
+}
+
+function selectionBounds(boxes: BoxMetrics[]): BoxMetrics | null {
+  if (!boxes.length) return null;
+  const left = Math.min(...boxes.map((box) => box.left));
+  const top = Math.min(...boxes.map((box) => box.top));
+  const right = Math.max(...boxes.map((box) => box.right));
+  const bottom = Math.max(...boxes.map((box) => box.bottom));
+  const width = right - left;
+  const height = bottom - top;
+  return {
+    left,
+    top,
+    width,
+    height,
+    right,
+    bottom,
+    centerX: left + width / 2,
+    centerY: top + height / 2
+  };
+}
+
+function setComponentSlidePosition(component: Component, rootEl: HTMLElement, left: number, top: number): void {
+  const element = component.getEl?.();
+  const win = element?.ownerDocument.defaultView;
+  if (!element || !win) return;
+
+  const computed = win.getComputedStyle(element);
+  const offsetParent = element.offsetParent instanceof HTMLElement ? element.offsetParent : rootEl;
+  const parentRect = offsetParent.getBoundingClientRect();
+  const rootRect = rootEl.getBoundingClientRect();
+  const nextLeft = left + rootRect.left - parentRect.left;
+  const nextTop = top + rootRect.top - parentRect.top;
+
+  component.addStyle({
+    position: computed.position === 'static' ? 'absolute' : computed.position || 'absolute',
+    left: `${Math.round(nextLeft)}px`,
+    top: `${Math.round(nextTop)}px`
+  });
+}
+
+function getActionableSelection(editor: Editor): Component[] {
+  const selected = editor.getSelectedAll?.() ?? [];
+  const fallback = editor.getSelected();
+  const candidates = selected.length ? selected : fallback ? [fallback] : [];
+  const unique = new Map<string, Component>();
+  candidates.forEach((component) => {
+    if (!component) return;
+    if (isRootLikeComponent(component)) return;
+    unique.set(componentKey(component), component);
+  });
+
+  const components = Array.from(unique.values());
+  return components.filter((component) => !components.some((other) => componentContains(other, component)));
+}
+
+function normalizeComponentSelection(components: Component[]): Component[] {
+  const unique = new Map<string, Component>();
+  components.forEach((component) => {
+    if (!component || isRootLikeComponent(component) || !component.getEl?.()?.isConnected) return;
+    unique.set(componentKey(component), component);
+  });
+  const selected = Array.from(unique.values());
+  return selected.filter((component) => !selected.some((other) => componentContains(other, component)));
+}
+
+function selectComponents(editor: Editor, components: Component[]): Component[] {
+  const actionable = components.filter((component) => !isRootLikeComponent(component));
+  if (!actionable.length) {
+    editor.select();
+    return [];
+  }
+  editor.select(actionable[0]);
+  actionable.slice(1).forEach((component) => editor.selectAdd(component));
+  return actionable;
+}
+
+function nudgeComponents(editor: Editor, components: Component[], dx: number, dy: number): boolean {
+  const rootEl = getCanvasRootElement(editor);
+  if (!rootEl || !components.length) return false;
+  components.forEach((component) => {
+    const box = getComponentBox(component, rootEl);
+    if (box) setComponentSlidePosition(component, rootEl, box.left + dx, box.top + dy);
+  });
+  return true;
+}
+
+function clearSmartGuides(editor: Editor): void {
+  editor.Canvas.getDocument()?.querySelectorAll('[data-html-demo-guide], [data-html-demo-marquee]').forEach((node) => node.remove());
+}
+
+function drawSmartGuides(editor: Editor, guides: Array<{ axis: 'x' | 'y'; value: number }>): void {
+  const doc = editor.Canvas.getDocument();
+  const rootEl = getCanvasRootElement(editor);
+  if (!doc || !rootEl) return;
+  doc.querySelectorAll('[data-html-demo-guide]').forEach((node) => node.remove());
+  const rootRect = rootEl.getBoundingClientRect();
+
+  guides.forEach((guide) => {
+    const line = doc.createElement('div');
+    line.setAttribute('data-html-demo-guide', guide.axis);
+    Object.assign(line.style, {
+      position: 'absolute',
+      pointerEvents: 'none',
+      zIndex: '2147483646',
+      background: '#0f766e',
+      boxShadow: '0 0 0 1px rgba(15,118,110,0.16)'
+    });
+    if (guide.axis === 'x') {
+      line.style.left = `${Math.round(rootRect.left + guide.value)}px`;
+      line.style.top = `${Math.round(rootRect.top)}px`;
+      line.style.width = '1px';
+      line.style.height = `${Math.round(rootRect.height)}px`;
+    } else {
+      line.style.left = `${Math.round(rootRect.left)}px`;
+      line.style.top = `${Math.round(rootRect.top + guide.value)}px`;
+      line.style.width = `${Math.round(rootRect.width)}px`;
+      line.style.height = '1px';
+    }
+    doc.body.appendChild(line);
+  });
+}
+
+function updateSmartGuides(editor: Editor, component?: Component, snap = false, gridSnap = false): void {
+  const target = component || editor.getSelected();
+  const rootEl = getCanvasRootElement(editor);
+  if (!target || !rootEl || isRootLikeComponent(target)) return;
+
+  const targetBox = getComponentBox(target, rootEl);
+  if (!targetBox) return;
+  const siblings = target
+    .parent()
+    ?.components()
+    .filter((item: Component) => item !== target && !isRootLikeComponent(item)) as Component[] | undefined;
+  const rootBox: BoxMetrics = {
+    left: 0,
+    top: 0,
+    width: rootEl.getBoundingClientRect().width,
+    height: rootEl.getBoundingClientRect().height,
+    right: rootEl.getBoundingClientRect().width,
+    bottom: rootEl.getBoundingClientRect().height,
+    centerX: rootEl.getBoundingClientRect().width / 2,
+    centerY: rootEl.getBoundingClientRect().height / 2
+  };
+  const referenceBoxes = [rootBox, ...(siblings || []).map((item) => getComponentBox(item, rootEl)).filter(Boolean) as BoxMetrics[]];
+  let bestX: GuideMatch | null = null;
+  let bestY: GuideMatch | null = null;
+
+  referenceBoxes.forEach((box) => {
+    (['left', 'centerX', 'right'] as const).forEach((edge) => {
+      (['left', 'centerX', 'right'] as const).forEach((targetEdge) => {
+        const diff = box[edge] - targetBox[targetEdge];
+        if (Math.abs(diff) <= SNAP_THRESHOLD && (!bestX || Math.abs(diff) < Math.abs(bestX.diff))) {
+          bestX = { diff, target: targetEdge, value: box[edge] };
+        }
+      });
+    });
+    (['top', 'centerY', 'bottom'] as const).forEach((edge) => {
+      (['top', 'centerY', 'bottom'] as const).forEach((targetEdge) => {
+        const diff = box[edge] - targetBox[targetEdge];
+        if (Math.abs(diff) <= SNAP_THRESHOLD && (!bestY || Math.abs(diff) < Math.abs(bestY.diff))) {
+          bestY = { diff, target: targetEdge, value: box[edge] };
+        }
+      });
+    });
+  });
+
+  const snapX = bestX as GuideMatch | null;
+  const snapY = bestY as GuideMatch | null;
+  const guides: Array<{ axis: 'x' | 'y'; value: number }> = [];
+  if (snapX) guides.push({ axis: 'x', value: snapX.value });
+  if (snapY) guides.push({ axis: 'y', value: snapY.value });
+  drawSmartGuides(editor, guides);
+
+  if (snap && (snapX || snapY || gridSnap)) {
+    let nextLeft = targetBox.left + (snapX?.diff || 0);
+    let nextTop = targetBox.top + (snapY?.diff || 0);
+    if (gridSnap) {
+      const gridSize = 24;
+      nextLeft = Math.round(nextLeft / gridSize) * gridSize;
+      nextTop = Math.round(nextTop / gridSize) * gridSize;
+    }
+    setComponentSlidePosition(target, rootEl, nextLeft, nextTop);
+  }
+}
+
+function collectLayerItems(editor: Editor): LayerItem[] {
+  const root =
+    editor.getWrapper()?.find('.deck-slide')[0] ||
+    editor.getWrapper()?.find('[data-htmlppt-document-root]')[0] ||
+    editor.getWrapper();
+  if (!root) return [];
+  const items: LayerItem[] = [];
+
+  const walk = (component: Component, depth: number) => {
+    component.components().forEach((child: Component) => {
+      if (isRootLikeComponent(child)) return;
+      const style = child.getStyle();
+      const hidden = stringStyleValue(style.display) === 'none' || stringStyleValue(style.visibility) === 'hidden';
+      items.push({
+        key: componentKey(child),
+        label: componentDisplayName(child),
+        tag: String(child.get('tagName') || child.getName() || 'element').toLowerCase(),
+        depth,
+        hidden,
+        group: child.getAttributes()['data-html-demo-group'] === 'true'
+      });
+      if (depth < 1) walk(child, depth + 1);
+    });
+  };
+
+  walk(root, 0);
+  return items;
+}
+
+function findComponentByKey(editor: Editor, key: string): Component | null {
+  const root = editor.getWrapper();
+  if (!root) return null;
+  const all = [root, ...root.find('*')];
+  return all.find((component) => componentKey(component) === key) || null;
+}
+
+function componentHtmlForGroup(component: Component, box: BoxMetrics, bounds: BoxMetrics): string {
+  const element = component.getEl?.();
+  if (!element) return component.toHTML();
+
+  const clone = element.cloneNode(true) as HTMLElement;
+  clone.classList.remove('gjs-selected', 'gjs-hovered');
+  clone.removeAttribute('data-html-demo-multi-selected');
+  clone.querySelectorAll('[data-html-demo-multi-selected], .gjs-selected, .gjs-hovered').forEach((node) => {
+    (node as HTMLElement).classList.remove('gjs-selected', 'gjs-hovered');
+    (node as HTMLElement).removeAttribute('data-html-demo-multi-selected');
+  });
+  clone.querySelectorAll('[data-gjs-highlightable], [data-gjs-type]').forEach((node) => {
+    (node as HTMLElement).removeAttribute('data-gjs-highlightable');
+    (node as HTMLElement).removeAttribute('data-gjs-type');
+  });
+  clone.removeAttribute('data-gjs-highlightable');
+  clone.removeAttribute('data-gjs-type');
+  clone.removeAttribute('draggable');
+  clone.style.position = 'absolute';
+  clone.style.left = `${Math.round(box.left - bounds.left)}px`;
+  clone.style.top = `${Math.round(box.top - bounds.top)}px`;
+  clone.style.margin = clone.style.margin || '0';
+  return clone.outerHTML;
+}
+
 function isBoldValue(value: string | undefined): boolean {
   if (!value) return false;
   if (value === 'bold' || value === 'bolder') return true;
@@ -215,6 +624,49 @@ function isTextLikeComponent(component: Component | null): boolean {
   const tagName = String(component.get('tagName') || component.getName() || '').toLowerCase();
   if (component.is('text') || component.is('textnode')) return true;
   return ['a', 'button', 'figcaption', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'p', 'span', 'td', 'th'].includes(tagName);
+}
+
+function isEditableShortcutTarget(target: EventTarget | null): boolean {
+  const element = getClickElement(target);
+  if (!element) return false;
+  const tagName = element.tagName.toLowerCase();
+  return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || element.isContentEditable;
+}
+
+function nudgeSelectedComponent(editor: Editor, dx: number, dy: number): boolean {
+  const selected = editor.getSelected();
+  const element = selected?.getEl?.() as HTMLElement | undefined;
+  const win = element?.ownerDocument.defaultView;
+  if (!selected || !element || !win) return false;
+
+  const computed = win.getComputedStyle(element);
+  const style = selected.getStyle();
+  const currentLeft =
+    Number.parseFloat(stringStyleValue(style.left) || '') ||
+    Number.parseFloat(computed.left) ||
+    (element.offsetParent instanceof HTMLElement ? element.getBoundingClientRect().left - element.offsetParent.getBoundingClientRect().left : 0);
+  const currentTop =
+    Number.parseFloat(stringStyleValue(style.top) || '') ||
+    Number.parseFloat(computed.top) ||
+    (element.offsetParent instanceof HTMLElement ? element.getBoundingClientRect().top - element.offsetParent.getBoundingClientRect().top : 0);
+
+  selected.addStyle({
+    position: computed.position === 'static' ? 'relative' : computed.position || 'relative',
+    left: `${Math.round(currentLeft + dx)}px`,
+    top: `${Math.round(currentTop + dy)}px`
+  });
+  return true;
+}
+
+function enableComponentResize(component: Component | null | undefined): void {
+  if (!component) return;
+  const tagName = String(component.get('tagName') || component.getName() || '').toLowerCase();
+  if (tagName === 'body' || component.get('type') === 'wrapper') return;
+
+  component.set({
+    resizable: ELEMENT_RESIZER_OPTIONS
+  });
+  component.components().forEach((child: Component) => enableComponentResize(child));
 }
 
 function syncEditableElementToModel(editor: Editor, element: HTMLElement | null): void {
@@ -362,11 +814,17 @@ export default function App() {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
+  const [lastAutoSavedAt, setLastAutoSavedAt] = useState<string | null>(null);
+  const [selectionItems, setSelectionItems] = useState<ComponentSelectionItem[]>([]);
+  const [layerItems, setLayerItems] = useState<LayerItem[]>([]);
+  const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
 
   const editorHostRef = useRef<HTMLDivElement | null>(null);
   const editorShellRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<Editor | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const autoSaveTimerRef = useRef<number | null>(null);
+  const autoSaveCheckedRef = useRef(false);
   const loadingSlideRef = useRef(false);
   const slidesRef = useRef(slides);
   const metaRef = useRef(meta);
@@ -374,6 +832,9 @@ export default function App() {
   const gridEnabledRef = useRef(gridEnabled);
   const zoomRef = useRef(zoom);
   const canvasFitModeRef = useRef(canvasFitMode);
+  const selectionItemsRef = useRef<ComponentSelectionItem[]>([]);
+  const lastSelectionItemsRef = useRef<ComponentSelectionItem[]>([]);
+  const lastSelectedComponentsRef = useRef<Component[]>([]);
 
   useEffect(() => {
     slidesRef.current = slides;
@@ -396,6 +857,10 @@ export default function App() {
   }, [canvasFitMode]);
 
   useEffect(() => {
+    selectionItemsRef.current = selectionItems;
+  }, [selectionItems]);
+
+  useEffect(() => {
     zoomRef.current = zoom;
     editorRef.current?.Canvas.setZoom(zoom);
   }, [zoom]);
@@ -408,6 +873,108 @@ export default function App() {
       toastTimerRef.current = null;
     }, 2600);
   }, []);
+
+  const refreshLayerItems = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    setLayerItems(collectLayerItems(editor));
+  }, []);
+
+  const syncSelectionState = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    const selected = getActionableSelection(editor);
+    const items = selected.map((component) => ({
+      key: componentKey(component),
+      label: componentDisplayName(component)
+    }));
+    selectionItemsRef.current = items;
+    if (items.length) {
+      lastSelectionItemsRef.current = items;
+      lastSelectedComponentsRef.current = selected;
+    }
+    setSelectionItems(items);
+    setSelectedSummary(selected.length === 1 ? summarizeSelected(editor) : null);
+
+    const doc = editor.Canvas.getDocument();
+    doc?.querySelectorAll('[data-html-demo-multi-selected]').forEach((node) => node.removeAttribute('data-html-demo-multi-selected'));
+    selected.forEach((component) => component.getEl?.()?.setAttribute('data-html-demo-multi-selected', 'true'));
+  }, []);
+
+  const refreshRecentFiles = useCallback(async () => {
+    try {
+      if (!window.desktopBridge?.listRecentFiles) return;
+      setRecentFiles(await window.desktopBridge.listRecentFiles());
+    } catch (error) {
+      console.error(error);
+    }
+  }, []);
+
+  const applyManualSelectionState = useCallback((components: Component[]) => {
+    const editor = editorRef.current;
+    if (!editor) return [];
+
+    const selected = normalizeComponentSelection(components);
+    const items = selected.map((component) => ({
+      key: componentKey(component),
+      label: componentDisplayName(component)
+    }));
+    selectionItemsRef.current = items;
+    if (items.length) {
+      lastSelectionItemsRef.current = items;
+      lastSelectedComponentsRef.current = selected;
+    }
+    setSelectionItems(items);
+    setSelectedSummary(selected.length === 1 ? summarizeComponent(selected[0]) : null);
+
+    const doc = editor.Canvas.getDocument();
+    doc?.querySelectorAll('[data-html-demo-multi-selected]').forEach((node) => node.removeAttribute('data-html-demo-multi-selected'));
+    selected.forEach((component) => component.getEl?.()?.setAttribute('data-html-demo-multi-selected', 'true'));
+    return selected;
+  }, []);
+
+  const getCurrentSelection = useCallback((editor = editorRef.current): Component[] => {
+    if (!editor) return [];
+    const liveSelection = getActionableSelection(editor);
+    const refSelection = selectionItemsRef.current
+      .map((item) => findComponentByKey(editor, item.key))
+      .filter((component): component is Component => Boolean(component) && !isRootLikeComponent(component));
+    if (refSelection.length >= liveSelection.length && refSelection.length) return refSelection;
+    const docSelection = Array.from(editor.Canvas.getDocument()?.querySelectorAll('[data-html-demo-multi-selected="true"]') || [])
+      .map((element) => getGrapesComponentFromElement(editor, element))
+      .filter((component): component is Component => Boolean(component) && !isRootLikeComponent(component));
+    if (docSelection.length > liveSelection.length) return docSelection;
+    if (liveSelection.length) return liveSelection;
+    if (refSelection.length) return refSelection;
+    const recentSelection = lastSelectionItemsRef.current
+      .map((item) => findComponentByKey(editor, item.key))
+      .filter((component): component is Component => Boolean(component) && !isRootLikeComponent(component));
+    if (recentSelection.length) return recentSelection;
+    const retainedSelection = lastSelectedComponentsRef.current.filter(
+      (component) => component.getEl?.()?.isConnected && !isRootLikeComponent(component)
+    );
+    if (retainedSelection.length) return retainedSelection;
+
+    return docSelection;
+  }, []);
+
+  const toggleCurrentSelection = useCallback(
+    (component: Component) => {
+      const editor = editorRef.current;
+      if (!editor) return [];
+      const current = getCurrentSelection(editor);
+      const key = componentKey(component);
+      const next = current.some((item) => componentKey(item) === key)
+        ? current.filter((item) => componentKey(item) !== key)
+        : [...current, component];
+      selectComponents(editor, next);
+      applyManualSelectionState(next);
+      window.setTimeout(() => applyManualSelectionState(next), 0);
+      return next;
+    },
+    [applyManualSelectionState, getCurrentSelection]
+  );
 
   useEffect(() => {
     const dismissTransientUi = (event: Event) => {
@@ -483,6 +1050,13 @@ export default function App() {
 
     helperStyle.textContent = isDocumentMode
       ? `
+      [data-html-demo-multi-selected="true"] {
+        outline: 2px solid rgba(15, 118, 110, 0.72) !important;
+        outline-offset: 2px;
+      }
+      [data-html-demo-group="true"] {
+        outline-offset: 2px;
+      }
       html.html-demo-editor-grid body::after {
         content: "";
         position: fixed;
@@ -496,6 +1070,13 @@ export default function App() {
       }
     `
       : `
+      [data-html-demo-multi-selected="true"] {
+        outline: 2px solid rgba(15, 118, 110, 0.72) !important;
+        outline-offset: 2px;
+      }
+      [data-html-demo-group="true"] {
+        outline-offset: 2px;
+      }
       html {
         min-height: 100%;
       }
@@ -630,16 +1211,23 @@ export default function App() {
       updateCanvasDevice(normalized);
       editor.setComponents(normalized.components);
       editor.setStyle(normalized.css);
+      enableComponentResize(editor.getWrapper());
       editor.Canvas.setZoom(zoomRef.current);
       (editor as unknown as { setDragMode?: (mode: string) => void }).setDragMode?.('absolute');
       setSelectedSummary(null);
+      setSelectionItems([]);
+      selectionItemsRef.current = [];
+      lastSelectionItemsRef.current = [];
+      lastSelectedComponentsRef.current = [];
 
       window.setTimeout(() => {
         syncCanvasHelpers();
+        syncSelectionState();
+        refreshLayerItems();
         loadingSlideRef.current = false;
       }, 0);
     },
-    [syncCanvasHelpers, updateCanvasDevice]
+    [refreshLayerItems, syncCanvasHelpers, syncSelectionState, updateCanvasDevice]
   );
 
   const commitCurrentSlide = useCallback(() => {
@@ -686,6 +1274,29 @@ export default function App() {
     [loadSlideIntoEditor]
   );
 
+  const restoreAutoSaveIfAvailable = useCallback(async () => {
+    if (autoSaveCheckedRef.current) return;
+    autoSaveCheckedRef.current = true;
+    if (!window.desktopBridge?.loadAutoSave) return;
+
+    const record: AutoSaveRecord | null = await window.desktopBridge.loadAutoSave();
+    if (!record?.html) return;
+
+    const savedAt = record.savedAt ? new Date(record.savedAt).toLocaleString() : '上次编辑时';
+    const shouldRestore = window.confirm(`发现 ${savedAt} 的自动保存草稿，是否恢复？`);
+    if (!shouldRestore) return;
+
+    const parsed = parseHtmlProject(
+      record.html,
+      record.sourceName || record.title || '自动恢复.html',
+      record.filePath,
+      record.baseDir
+    );
+    replaceProject(parsed.meta, parsed.slides);
+    setDirty(true);
+    notify('已恢复自动保存草稿');
+  }, [notify, replaceProject]);
+
   useEffect(() => {
     if (!editorHostRef.current) return;
 
@@ -697,7 +1308,7 @@ export default function App() {
       storageManager: false,
       panels: { defaults: [] },
       blockManager: { appendTo: '#blocks-panel' },
-      layerManager: { appendTo: '#layers-panel' },
+      layerManager: { appendTo: '#hidden-gjs-panel' },
       traitManager: { appendTo: '#traits-panel' },
       selectorManager: { appendTo: '#hidden-gjs-panel' },
       styleManager: {
@@ -738,21 +1349,115 @@ export default function App() {
 
         (frameDoc as Document & { __htmlDemoSelectionBridge?: boolean }).__htmlDemoSelectionBridge = true;
         frameDoc.addEventListener(
+          'mousedown',
+          (event) => {
+            if (event.button !== 0 || isEditableShortcutTarget(event.target)) return;
+            const component = getGrapesComponentFromElement(editor, event.target);
+            if ((event.shiftKey || event.metaKey || event.ctrlKey) && component && !isRootLikeComponent(component)) {
+              event.preventDefault();
+              event.stopPropagation();
+              event.stopImmediatePropagation();
+              return;
+            }
+            const target = getClickElement(event.target);
+            const isCanvasTarget =
+              !target ||
+              target === frameDoc.body ||
+              target === frameDoc.documentElement ||
+              target.classList.contains('deck-slide') ||
+              target.hasAttribute('data-htmlppt-document-root');
+            if (!isCanvasTarget) return;
+
+            const startX = event.clientX;
+            const startY = event.clientY;
+            let marquee: HTMLDivElement | null = null;
+            let active = false;
+
+            const draw = (moveEvent: MouseEvent) => {
+              const dx = moveEvent.clientX - startX;
+              const dy = moveEvent.clientY - startY;
+              if (!active && Math.hypot(dx, dy) < 6) return;
+              if (!marquee) {
+                marquee = frameDoc.createElement('div');
+                marquee.setAttribute('data-html-demo-marquee', 'true');
+                Object.assign(marquee.style, {
+                  position: 'fixed',
+                  pointerEvents: 'none',
+                  zIndex: '2147483647',
+                  border: '1px solid #0f766e',
+                  background: 'rgba(15, 118, 110, 0.1)'
+                });
+                frameDoc.body.appendChild(marquee);
+              }
+              active = true;
+              marquee.style.left = `${Math.min(startX, moveEvent.clientX)}px`;
+              marquee.style.top = `${Math.min(startY, moveEvent.clientY)}px`;
+              marquee.style.width = `${Math.abs(dx)}px`;
+              marquee.style.height = `${Math.abs(dy)}px`;
+              event.preventDefault();
+            };
+
+            const finish = () => {
+              frameDoc.removeEventListener('mousemove', draw);
+              frameDoc.removeEventListener('mouseup', finish);
+              if (!active || !marquee) {
+                marquee?.remove();
+                return;
+              }
+
+              const selectRect = marquee.getBoundingClientRect();
+              marquee.remove();
+              const root = editor.getWrapper();
+              const hits = root
+                ? root
+                    .find('*')
+                    .filter((component) => !isRootLikeComponent(component))
+                    .filter((component) => {
+                      const rect = component.getEl?.()?.getBoundingClientRect();
+                      if (!rect || rect.width < 2 || rect.height < 2) return false;
+                      return rect.left < selectRect.right && rect.right > selectRect.left && rect.top < selectRect.bottom && rect.bottom > selectRect.top;
+                    })
+                : [];
+              const topLevelHits = hits.filter((component) => !hits.some((other) => componentContains(other, component)));
+              if (topLevelHits.length) {
+                selectComponents(editor, topLevelHits);
+                applyManualSelectionState(topLevelHits);
+                setRightTab('style');
+              } else {
+                editor.select();
+                syncSelectionState();
+              }
+            };
+
+            frameDoc.addEventListener('mousemove', draw);
+            frameDoc.addEventListener('mouseup', finish);
+          },
+          true
+        );
+        frameDoc.addEventListener(
           'click',
           (event) => {
             const component = getGrapesComponentFromElement(editor, event.target);
             if (!component) return;
 
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
             setContextMenu(null);
-            editor.select(component);
+            if (event.shiftKey || event.metaKey || event.ctrlKey) {
+              toggleCurrentSelection(component);
+            } else {
+              editor.select(component);
+              applyManualSelectionState([component]);
+            }
             setRightTab('style');
-            setSelectedSummary(summarizeSelected(editor));
           },
           true
         );
-        frameDoc.addEventListener(
-          'contextmenu',
-          (event) => {
+        const handleFrameContextMenu = (event: MouseEvent) => {
+            const markedEvent = event as MouseEvent & { __htmlDemoContextHandled?: boolean };
+            if (markedEvent.__htmlDemoContextHandled) return;
+            markedEvent.__htmlDemoContextHandled = true;
             const component = getGrapesComponentFromElement(editor, event.target);
             if (!component) {
               setContextMenu(null);
@@ -760,9 +1465,12 @@ export default function App() {
             }
 
             event.preventDefault();
-            editor.select(component);
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+            const alreadySelected = getActionableSelection(editor).some((selected) => selected === component);
+            if (!alreadySelected) editor.select(component);
             setRightTab('style');
-            setSelectedSummary(summarizeSelected(editor));
+            syncSelectionState();
 
             const frameEl = editor.Canvas.getFrameEl();
             const frameRect = frameEl?.getBoundingClientRect();
@@ -771,15 +1479,40 @@ export default function App() {
             const scaleY = frameRect && frameWindow?.innerHeight ? frameRect.height / frameWindow.innerHeight : zoomRef.current / 100;
             const left = (frameRect?.left ?? 0) + event.clientX * scaleX;
             const top = (frameRect?.top ?? 0) + event.clientY * scaleY;
-            const summary = summarizeSelected(editor);
+            const summary = summarizeComponent(component);
 
             setContextMenu({
               x: Math.max(8, Math.min(window.innerWidth - 230, left)),
               y: Math.max(8, Math.min(window.innerHeight - 260, top)),
-              label: summary?.label || '元素',
-              isImage: summary?.isImage || false,
-              canEditText: isTextLikeComponent(component)
+              label: summary.label || '元素',
+              isImage: summary.isImage || false,
+              canEditText: isTextLikeComponent(component),
+              summary
             });
+        };
+        frameDoc.defaultView?.addEventListener('contextmenu', handleFrameContextMenu, true);
+        frameDoc.addEventListener('contextmenu', handleFrameContextMenu, true);
+        frameDoc.addEventListener(
+          'keydown',
+          (event) => {
+            if (isEditableShortcutTarget(event.target)) return;
+            const directionMap: Record<string, [number, number]> = {
+              ArrowLeft: [-1, 0],
+              ArrowRight: [1, 0],
+              ArrowUp: [0, -1],
+              ArrowDown: [0, 1]
+            };
+            const direction = directionMap[event.key];
+            if (!direction) return;
+
+            const step = event.shiftKey ? 10 : 1;
+            const selected = getCurrentSelection(editor);
+            if (nudgeComponents(editor, selected.length ? selected : [], direction[0] * step, direction[1] * step)) {
+              event.preventDefault();
+              event.stopPropagation();
+              syncSelectionState();
+              setDirty(true);
+            }
           },
           true
         );
@@ -790,18 +1523,42 @@ export default function App() {
       loadSlideIntoEditor(slidesRef.current[0]);
       syncCanvasHelpers();
       installSelectionBridge();
+      void restoreAutoSaveIfAvailable();
     });
 
     editor.on('update', () => {
       if (!loadingSlideRef.current) setDirty(true);
     });
+    editor.on('component:add', (component) => {
+      enableComponentResize(component);
+      refreshLayerItems();
+    });
+    editor.on('component:remove', () => {
+      refreshLayerItems();
+      syncSelectionState();
+    });
+    editor.on('component:resize:init', (options: { component?: Component; resizable?: boolean | ResizerOptions }) => {
+      if (options.component) {
+        options.resizable = ELEMENT_RESIZER_OPTIONS;
+      }
+    });
+    editor.on('component:drag component:resize:move', (event: { target?: Component; component?: Component }) => {
+      updateSmartGuides(editor, event.component || event.target);
+    });
+    editor.on('component:drag:end component:resize:end', (event: { target?: Component; component?: Component }) => {
+      updateSmartGuides(editor, event.component || event.target, true, gridEnabledRef.current && !metaRef.current.documentMode);
+      window.setTimeout(() => clearSmartGuides(editor), 220);
+      syncSelectionState();
+      refreshLayerItems();
+    });
     editor.on('component:selected component:update component:styleUpdate', () => {
-      setSelectedSummary(summarizeSelected(editor));
+      syncSelectionState();
+      refreshLayerItems();
     });
     editor.on('component:selected', () => {
       setRightTab('style');
     });
-    editor.on('component:deselected', () => setSelectedSummary(null));
+    editor.on('component:deselected', syncSelectionState);
     editor.on('canvas:frame:load', () => {
       syncCanvasHelpers();
       installSelectionBridge();
@@ -814,7 +1571,16 @@ export default function App() {
       editor.destroy();
       editorRef.current = null;
     };
-  }, [loadSlideIntoEditor, syncCanvasHelpers]);
+  }, [
+    applyManualSelectionState,
+    getCurrentSelection,
+    loadSlideIntoEditor,
+    refreshLayerItems,
+    restoreAutoSaveIfAvailable,
+    syncCanvasHelpers,
+    syncSelectionState,
+    toggleCurrentSelection
+  ]);
 
   useEffect(() => {
     syncCanvasHelpers();
@@ -833,6 +1599,31 @@ export default function App() {
     };
   }, [commitCurrentSlide]);
 
+  useEffect(() => {
+    if (!dirty) return;
+    if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
+
+    autoSaveTimerRef.current = window.setTimeout(async () => {
+      try {
+        const { html } = materializeHtml();
+        const result = await window.desktopBridge.autoSaveProject({
+          html,
+          title: metaRef.current.title,
+          filePath: metaRef.current.filePath,
+          baseDir: metaRef.current.baseDir,
+          sourceName: metaRef.current.sourceName
+        });
+        setLastAutoSavedAt(result.savedAt);
+      } catch (error) {
+        console.error(error);
+      }
+    }, 30000);
+
+    return () => {
+      if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
+    };
+  }, [dirty, materializeHtml, slides, meta, currentSlideId]);
+
   const handleNewProject = useCallback(() => {
     if (!confirmDiscard()) return;
     const project = createDefaultProject();
@@ -844,8 +1635,9 @@ export default function App() {
       const parsed = parseHtmlProject(result.html, result.name, result.filePath, result.baseDir);
       replaceProject(parsed.meta, parsed.slides);
       notify(`已打开 ${result.name}`);
+      void refreshRecentFiles();
     },
-    [notify, replaceProject]
+    [notify, refreshRecentFiles, replaceProject]
   );
 
   const handleOpenFile = useCallback(async () => {
@@ -861,6 +1653,26 @@ export default function App() {
     if (!result) return;
     openImportedProject(result);
   }, [confirmDiscard, openImportedProject]);
+
+  const handleOpenRecentFile = useCallback(
+    async (filePath: string) => {
+      if (!confirmDiscard()) return;
+      const result = await window.desktopBridge.openPath(filePath);
+      if (result) openImportedProject(result);
+      await refreshRecentFiles();
+    },
+    [confirmDiscard, openImportedProject, refreshRecentFiles]
+  );
+
+  useEffect(() => {
+    void refreshRecentFiles();
+    if (!window.desktopBridge?.onOpenPathRequested) return undefined;
+    return window.desktopBridge.onOpenPathRequested(async (filePath) => {
+      if (!confirmDiscard()) return;
+      const result = await window.desktopBridge.openPath(filePath);
+      if (result) openImportedProject(result);
+    });
+  }, [confirmDiscard, openImportedProject, refreshRecentFiles]);
 
   useEffect(() => {
     let dragDepth = 0;
@@ -937,12 +1749,15 @@ export default function App() {
         sourceName: result.filePath.split(/[\\/]/).pop()
       }));
       setDirty(false);
+      setLastAutoSavedAt(null);
+      await window.desktopBridge.clearAutoSave();
+      await refreshRecentFiles();
       notify(`已保存到 ${result.filePath.split(/[\\/]/).pop()}`);
     } catch (error) {
       console.error(error);
       notify('保存失败，请检查文件权限或路径');
     }
-  }, [materializeHtml, notify]);
+  }, [materializeHtml, notify, refreshRecentFiles]);
 
   const handleSaveAs = useCallback(async () => {
     try {
@@ -962,12 +1777,15 @@ export default function App() {
         sourceName: result.filePath.split(/[\\/]/).pop()
       }));
       setDirty(false);
+      setLastAutoSavedAt(null);
+      await window.desktopBridge.clearAutoSave();
+      await refreshRecentFiles();
       notify(`已另存为 ${result.filePath.split(/[\\/]/).pop()}`);
     } catch (error) {
       console.error(error);
       notify('另存失败，请检查文件权限或路径');
     }
-  }, [materializeHtml, notify]);
+  }, [materializeHtml, notify, refreshRecentFiles]);
 
   const handleExport = useCallback(async () => {
     try {
@@ -984,13 +1802,14 @@ export default function App() {
     }
   }, [materializeHtml, notify]);
 
-  const handlePresent = useCallback(async () => {
+  const handlePresent = useCallback(async (startSlideIndex = 0) => {
     try {
       const { html } = materializeHtml();
       await window.desktopBridge.presentProject({
         html,
         baseDir: metaRef.current.baseDir,
-        fullscreen: true
+        fullscreen: true,
+        startSlideIndex
       });
       notify('已用当前修改进入演示');
     } catch (error) {
@@ -1173,26 +1992,272 @@ export default function App() {
     [commitCurrentSlide, draggedSlideId]
   );
 
-  const handleDeleteSelection = useCallback(() => {
-    const selected = editorRef.current?.getSelected();
-    if (!selected) return;
-    selected.remove();
-    setSelectedSummary(null);
-    setContextMenu(null);
+  const selectComponent = useCallback(
+    (component: Component, additive = false) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      if (additive) {
+        toggleCurrentSelection(component);
+      } else {
+        editor.select(component);
+        applyManualSelectionState([component]);
+      }
+      setRightTab('style');
+    },
+    [applyManualSelectionState, toggleCurrentSelection]
+  );
+
+  const handleSelectLayer = useCallback(
+    (key: string, additive = false) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const component = findComponentByKey(editor, key);
+      if (!component) return;
+      selectComponent(component, additive);
+    },
+    [selectComponent]
+  );
+
+  const handleToggleLayerVisibility = useCallback(
+    (key: string) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const component = findComponentByKey(editor, key);
+      if (!component) return;
+      const style = component.getStyle();
+      const hidden = stringStyleValue(style.display) === 'none' || stringStyleValue(style.visibility) === 'hidden';
+      component.addStyle(hidden ? { display: '', visibility: '' } : { display: 'none' });
+      refreshLayerItems();
+      setDirty(true);
+    },
+    [refreshLayerItems]
+  );
+
+  const handleMoveLayerOrder = useCallback(
+    (key: string, direction: 'up' | 'down') => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const component = findComponentByKey(editor, key);
+      const parent = component?.parent();
+      if (!component || !parent) return;
+      const nextIndex = direction === 'up' ? Math.max(0, component.index() - 1) : component.index() + 1;
+      component.move(parent, { at: nextIndex });
+      selectComponent(component);
+      refreshLayerItems();
+      setDirty(true);
+    },
+    [refreshLayerItems, selectComponent]
+  );
+
+  const handleAlignSelection = useCallback(
+    (action: AlignAction) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const rootEl = getCanvasRootElement(editor);
+      const components = getCurrentSelection(editor);
+      if (!rootEl || !components.length) return;
+
+      const boxes = components.map((component) => getComponentBox(component, rootEl)).filter(Boolean) as BoxMetrics[];
+      const target =
+        components.length > 1
+          ? selectionBounds(boxes)
+          : {
+              left: 0,
+              top: 0,
+              width: rootEl.getBoundingClientRect().width,
+              height: rootEl.getBoundingClientRect().height,
+              right: rootEl.getBoundingClientRect().width,
+              bottom: rootEl.getBoundingClientRect().height,
+              centerX: rootEl.getBoundingClientRect().width / 2,
+              centerY: rootEl.getBoundingClientRect().height / 2
+            };
+      if (!target) return;
+
+      components.forEach((component, index) => {
+        const box = boxes[index];
+        if (!box) return;
+        const nextLeft =
+          action === 'left'
+            ? target.left
+            : action === 'center'
+              ? target.centerX - box.width / 2
+              : action === 'right'
+                ? target.right - box.width
+                : box.left;
+        const nextTop =
+          action === 'top'
+            ? target.top
+            : action === 'middle'
+              ? target.centerY - box.height / 2
+              : action === 'bottom'
+                ? target.bottom - box.height
+                : box.top;
+        setComponentSlidePosition(component, rootEl, nextLeft, nextTop);
+      });
+      syncSelectionState();
+      refreshLayerItems();
+      setDirty(true);
+    },
+    [refreshLayerItems, syncSelectionState]
+  );
+
+  const handleDistributeSelection = useCallback(
+    (action: DistributeAction) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const rootEl = getCanvasRootElement(editor);
+      const components = getCurrentSelection(editor);
+      if (!rootEl || components.length < 3) return;
+      const boxes = components
+        .map((component) => ({ component, box: getComponentBox(component, rootEl) }))
+        .filter((item): item is { component: Component; box: BoxMetrics } => Boolean(item.box));
+      const ordered = boxes.sort((a, b) => (action === 'horizontal' ? a.box.centerX - b.box.centerX : a.box.centerY - b.box.centerY));
+      const first = ordered[0];
+      const last = ordered[ordered.length - 1];
+      if (!first || !last) return;
+      const start = action === 'horizontal' ? first.box.centerX : first.box.centerY;
+      const end = action === 'horizontal' ? last.box.centerX : last.box.centerY;
+      const step = (end - start) / (ordered.length - 1);
+      ordered.forEach(({ component, box }, index) => {
+        const center = start + step * index;
+        setComponentSlidePosition(
+          component,
+          rootEl,
+          action === 'horizontal' ? center - box.width / 2 : box.left,
+          action === 'vertical' ? center - box.height / 2 : box.top
+        );
+      });
+      syncSelectionState();
+      refreshLayerItems();
+      setDirty(true);
+    },
+    [refreshLayerItems, syncSelectionState]
+  );
+
+  const handleGroupSelection = useCallback(() => {
+    const editor = editorRef.current;
+    const rootEl = editor ? getCanvasRootElement(editor) : null;
+    const components = getCurrentSelection(editor);
+    if (!editor || !rootEl || components.length < 2) return;
+    const parent = components[0].parent();
+    if (!parent || components.some((component) => component.parent() !== parent)) {
+      notify('暂时只能组合同一层级的对象');
+      return;
+    }
+
+    const boxes = components.map((component) => getComponentBox(component, rootEl)).filter(Boolean) as BoxMetrics[];
+    const bounds = selectionBounds(boxes);
+    if (!bounds) return;
+    const groupIndex = Math.min(...components.map((component) => component.index()));
+    const childHtml = components.map((component, index) => componentHtmlForGroup(component, boxes[index], bounds)).join('');
+    const [group] = parent.append(
+      {
+        tagName: 'div',
+        attributes: { 'data-html-demo-group': 'true' },
+        classes: ['html-demo-group'],
+        style: {
+          position: 'absolute',
+          left: `${Math.round(bounds.left)}px`,
+          top: `${Math.round(bounds.top)}px`,
+          width: `${Math.round(bounds.width)}px`,
+          height: `${Math.round(bounds.height)}px`
+        },
+        components: childHtml
+      },
+      { at: groupIndex }
+    );
+    components.forEach((component) => component.remove());
+    if (group) {
+      enableComponentResize(group);
+      editor.select(group);
+    }
+    syncSelectionState();
+    refreshLayerItems();
     setDirty(true);
-  }, []);
+  }, [notify, refreshLayerItems, syncSelectionState]);
+
+  const handleUngroupSelection = useCallback(() => {
+    const editor = editorRef.current;
+    const rootEl = editor ? getCanvasRootElement(editor) : null;
+    if (!editor || !rootEl) return;
+    const groups = getCurrentSelection(editor).filter((component) => component.getAttributes()['data-html-demo-group'] === 'true');
+    if (!groups.length) return;
+
+    const ungrouped: Component[] = [];
+    groups.forEach((group) => {
+      const parent = group.parent();
+      const groupBox = getComponentBox(group, rootEl);
+      if (!parent || !groupBox) return;
+      const at = group.index();
+      const children = ((group.components() as unknown as { models?: Component[] }).models || []) as Component[];
+      children.forEach((child, index) => {
+        const childBox = getComponentBox(child, group.getEl?.() || rootEl);
+        const clone = child.clone();
+        clone.addStyle({
+          position: 'absolute',
+          left: `${Math.round(groupBox.left + (childBox?.left || 0))}px`,
+          top: `${Math.round(groupBox.top + (childBox?.top || 0))}px`
+        });
+        const [added] = parent.append(clone, { at: at + index });
+        if (added) ungrouped.push(added);
+      });
+      group.remove();
+    });
+
+    if (ungrouped.length) {
+      editor.select(ungrouped[0]);
+      ungrouped.slice(1).forEach((component) => editor.selectAdd(component));
+    }
+    syncSelectionState();
+    refreshLayerItems();
+    setDirty(true);
+  }, [refreshLayerItems, syncSelectionState]);
+
+  const handleDeleteSelection = useCallback(() => {
+    const editor = editorRef.current;
+    const selected = getCurrentSelection(editor);
+    if (!selected.length) return;
+    selected.forEach((component) => component.remove());
+    setSelectedSummary(null);
+    setSelectionItems([]);
+    selectionItemsRef.current = [];
+    lastSelectionItemsRef.current = [];
+    lastSelectedComponentsRef.current = [];
+    setContextMenu(null);
+    refreshLayerItems();
+    setDirty(true);
+  }, [refreshLayerItems]);
 
   const handleDuplicateSelection = useCallback(() => {
-    const selected = editorRef.current?.getSelected();
-    if (!selected) return;
-    const parent = selected.parent();
-    if (!parent) return;
-    const clone = selected.clone();
-    parent.append(clone);
-    editorRef.current?.select(clone);
+    const editor = editorRef.current;
+    const selected = getCurrentSelection(editor);
+    if (!editor || !selected.length) return;
+    const clones: Component[] = [];
+    selected.forEach((component) => {
+      const parent = component.parent();
+      if (!parent) return;
+      const clone = component.clone();
+      const style = clone.getStyle();
+      const left = cssNumber(stringStyleValue(style.left), Number.NaN);
+      const top = cssNumber(stringStyleValue(style.top), Number.NaN);
+      if (Number.isFinite(left) || Number.isFinite(top)) {
+        clone.addStyle({
+          left: Number.isFinite(left) ? `${Math.round(left + 24)}px` : stringStyleValue(style.left) || '',
+          top: Number.isFinite(top) ? `${Math.round(top + 24)}px` : stringStyleValue(style.top) || ''
+        });
+      }
+      const [added] = parent.append(clone, { at: component.index() + 1 });
+      if (added) clones.push(added);
+    });
+    if (clones.length) {
+      editor.select(clones[0]);
+      clones.slice(1).forEach((component) => editor.selectAdd(component));
+    }
     setContextMenu(null);
+    syncSelectionState();
+    refreshLayerItems();
     setDirty(true);
-  }, []);
+  }, [refreshLayerItems, syncSelectionState]);
 
   const handleEditSelectedText = useCallback(() => {
     const editor = editorRef.current;
@@ -1218,18 +2283,21 @@ export default function App() {
 
   const handleMoveSelectionLayer = useCallback((placement: 'front' | 'back') => {
     const editor = editorRef.current;
-    const selected = editor?.getSelected();
-    if (!editor || !selected) return;
+    const selected = getCurrentSelection(editor);
+    if (!editor || !selected.length) return;
 
-    const style = selected.getStyle();
-    selected.addStyle({
-      position: stringStyleValue(style.position) || 'relative',
-      'z-index': placement === 'front' ? '999' : '0'
+    selected.forEach((component) => {
+      const style = component.getStyle();
+      component.addStyle({
+        position: stringStyleValue(style.position) || 'relative',
+        'z-index': placement === 'front' ? '999' : '0'
+      });
     });
-    setSelectedSummary(summarizeSelected(editor));
+    syncSelectionState();
+    refreshLayerItems();
     setContextMenu(null);
     setDirty(true);
-  }, []);
+  }, [refreshLayerItems, syncSelectionState]);
 
   const handleReplaceImage = useCallback(async () => {
     const editor = editorRef.current;
@@ -1263,13 +2331,26 @@ export default function App() {
 
   const applySelectedStyles = useCallback((styles: Record<string, string>) => {
     const editor = editorRef.current;
-    const selected = editor?.getSelected();
-    if (!editor || !selected) return;
+    const selected = getCurrentSelection(editor);
+    if (!editor || !selected.length) return;
 
-    selected.addStyle(styles);
-    setSelectedSummary(summarizeSelected(editor));
+    selected.forEach((component) => component.addStyle(styles));
+    const summary = summarizeSelected(editor);
+    setSelectedSummary(summary);
+    setContextMenu((current) =>
+      current && summary
+        ? {
+            ...current,
+            label: summary.label,
+            isImage: summary.isImage,
+            summary
+          }
+        : current
+    );
+    syncSelectionState();
+    refreshLayerItems();
     setDirty(true);
-  }, []);
+  }, [refreshLayerItems, syncSelectionState]);
 
   const handleQuickStyleChange = useCallback(
     (property: string, value: string) => {
@@ -1285,11 +2366,11 @@ export default function App() {
       if (!editor || !selected) return;
 
       const style = selected.getStyle();
-      const currentSize = cssNumber(stringStyleValue(style['font-size']) || selectedSummary?.fontSize, 24);
+      const currentSize = cssNumber(stringStyleValue(style['font-size']) || contextMenu?.summary.fontSize || selectedSummary?.fontSize, 24);
       const nextSize = Math.max(8, Math.min(220, Math.round(currentSize + delta)));
       applySelectedStyles({ 'font-size': `${nextSize}px` });
     },
-    [applySelectedStyles, selectedSummary?.fontSize]
+    [applySelectedStyles, contextMenu?.summary.fontSize, selectedSummary?.fontSize]
   );
 
   const handleToggleTextStyle = useCallback(
@@ -1339,13 +2420,23 @@ export default function App() {
 
   const currentSlideIndex = slides.findIndex((slide) => slide.id === currentSlideId);
   const selectedSlide = slides[currentSlideIndex] ?? slides[0];
-  const contextFontSize = cssNumber(selectedSummary?.fontSize, 24);
-  const contextTextColor = cssColorInputValue(selectedSummary?.color, '#111827');
-  const contextFillColor = cssColorInputValue(selectedSummary?.backgroundColor, '#ffffff');
-  const contextFontValue = FONT_OPTIONS.some((option) => option.value === selectedSummary?.fontFamily) ? selectedSummary?.fontFamily : '';
-  const contextBoldActive = isBoldValue(selectedSummary?.fontWeight);
-  const contextItalicActive = selectedSummary?.fontStyle === 'italic';
-  const contextUnderlineActive = (selectedSummary?.textDecoration || '').includes('underline');
+  const selectedKeys = useMemo(() => new Set(selectionItems.map((item) => item.key)), [selectionItems]);
+  const selectedLayerItems = layerItems.filter((item) => selectedKeys.has(item.key));
+  const selectedCount = selectionItems.length;
+  const canGroupSelection = selectedCount >= 2;
+  const canUngroupSelection = selectedLayerItems.some((item) => item.group);
+  const canDistributeSelection = selectedCount >= 3;
+  const activeContextSummary = contextMenu?.summary || selectedSummary;
+  const contextFontSize = cssNumber(activeContextSummary?.fontSize, 24);
+  const contextTextColor = cssColorInputValue(activeContextSummary?.color, '#111827');
+  const contextFillColor = cssColorInputValue(activeContextSummary?.backgroundColor, '#ffffff');
+  const contextFontValue = FONT_OPTIONS.some((option) => option.value === activeContextSummary?.fontFamily)
+    ? activeContextSummary?.fontFamily
+    : '';
+  const customContextFont = activeContextSummary?.fontFamily && !contextFontValue ? activeContextSummary.fontFamily : '';
+  const contextBoldActive = isBoldValue(activeContextSummary?.fontWeight);
+  const contextItalicActive = activeContextSummary?.fontStyle === 'italic';
+  const contextUnderlineActive = (activeContextSummary?.textDecoration || '').includes('underline');
 
   const applyCurrentSlideCanvasPatch = useCallback(
     (patch: Partial<Pick<SlideModel, 'canvasWidth' | 'canvasHeight' | 'presentationMode'>>, reload = false) => {
@@ -1464,6 +2555,87 @@ export default function App() {
     [updateCurrentSlideSettings]
   );
 
+  useEffect(() => {
+    const handleAppKeyDown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      const isMod = event.metaKey || event.ctrlKey;
+
+      if (key === 'f5') {
+        event.preventDefault();
+        handlePresent(event.shiftKey ? Math.max(0, currentSlideIndex) : 0);
+        return;
+      }
+
+      if (!isMod) return;
+
+      if (key === 's') {
+        event.preventDefault();
+        if (event.shiftKey) void handleSaveAs();
+        else void handleSave();
+        return;
+      }
+      if (isEditableShortcutTarget(event.target)) return;
+      if (key === 'a') {
+        event.preventDefault();
+        const editor = editorRef.current;
+        const root = editor?.getWrapper()?.find('.deck-slide')[0] || editor?.getWrapper()?.find('[data-htmlppt-document-root]')[0] || editor?.getWrapper();
+        const components = root?.find('*').filter((component) => !isRootLikeComponent(component)) || [];
+        const topLevel = components.filter((component) => !components.some((other) => componentContains(other, component)));
+        if (editor && topLevel.length) {
+          selectComponents(editor, topLevel);
+          applyManualSelectionState(topLevel);
+        }
+        return;
+      }
+      if (key === 'g') {
+        event.preventDefault();
+        if (event.shiftKey) handleUngroupSelection();
+        else handleGroupSelection();
+        return;
+      }
+      if (key === 'o') {
+        event.preventDefault();
+        void handleOpenFile();
+        return;
+      }
+      if (key === 'n') {
+        event.preventDefault();
+        handleNewProject();
+        return;
+      }
+      if (key === 'm') {
+        event.preventDefault();
+        handleAddSlide();
+        return;
+      }
+      if (key === 'd') {
+        event.preventDefault();
+        const editor = editorRef.current;
+        if (editor && getCurrentSelection(editor).length) handleDuplicateSelection();
+        else if (selectedSlide) handleDuplicateSlide(selectedSlide.id);
+        return;
+      }
+    };
+
+    window.addEventListener('keydown', handleAppKeyDown, true);
+    return () => window.removeEventListener('keydown', handleAppKeyDown, true);
+  }, [
+    applyManualSelectionState,
+    currentSlideIndex,
+    handleAddSlide,
+    handleDuplicateSelection,
+    handleDuplicateSlide,
+    handleGroupSelection,
+    handleNewProject,
+    handleOpenFile,
+    handlePresent,
+    handleSave,
+    handleSaveAs,
+    handleUngroupSelection,
+    syncSelectionState,
+    selectedSlide
+  ]);
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -1505,7 +2677,7 @@ export default function App() {
           <ToolbarButton label="预览" onClick={handlePreviewWindow}>
             <Play size={16} />
           </ToolbarButton>
-          <ToolbarButton label="演示" onClick={handlePresent}>
+          <ToolbarButton label="演示" onClick={() => handlePresent(0)}>
             <MonitorPlay size={16} />
           </ToolbarButton>
           <ToolbarButton label="导出" onClick={handleExport}>
@@ -1607,7 +2779,39 @@ export default function App() {
                 {currentSlideIndex + 1 || 1}/{slides.length}
               </span>
             </div>
-            <div className="canvas-tools">
+            <div className="canvas-tools" onMouseDown={(event) => event.preventDefault()}>
+              <span className="selection-count">{selectedCount ? `已选 ${selectedCount}` : '未选中'}</span>
+              <button type="button" title="左对齐" disabled={!selectedCount} onClick={() => handleAlignSelection('left')}>
+                <AlignStartVertical size={16} />
+              </button>
+              <button type="button" title="水平居中" disabled={!selectedCount} onClick={() => handleAlignSelection('center')}>
+                <AlignCenterVertical size={16} />
+              </button>
+              <button type="button" title="右对齐" disabled={!selectedCount} onClick={() => handleAlignSelection('right')}>
+                <AlignEndVertical size={16} />
+              </button>
+              <button type="button" title="顶端对齐" disabled={!selectedCount} onClick={() => handleAlignSelection('top')}>
+                <AlignStartHorizontal size={16} />
+              </button>
+              <button type="button" title="垂直居中" disabled={!selectedCount} onClick={() => handleAlignSelection('middle')}>
+                <AlignCenterHorizontal size={16} />
+              </button>
+              <button type="button" title="底端对齐" disabled={!selectedCount} onClick={() => handleAlignSelection('bottom')}>
+                <AlignEndHorizontal size={16} />
+              </button>
+              <button type="button" title="水平分布" disabled={!canDistributeSelection} onClick={() => handleDistributeSelection('horizontal')}>
+                <AlignHorizontalSpaceBetween size={16} />
+              </button>
+              <button type="button" title="垂直分布" disabled={!canDistributeSelection} onClick={() => handleDistributeSelection('vertical')}>
+                <AlignVerticalSpaceBetween size={16} />
+              </button>
+              <button type="button" title="组合" disabled={!canGroupSelection} onClick={handleGroupSelection}>
+                <Group size={16} />
+              </button>
+              <button type="button" title="取消组合" disabled={!canUngroupSelection} onClick={handleUngroupSelection}>
+                <Ungroup size={16} />
+              </button>
+              <span className="canvas-tools-divider" />
               <label className="toggle-row">
                 <input
                   checked={gridEnabled && !meta.documentMode}
@@ -1653,6 +2857,13 @@ export default function App() {
           </div>
           <div ref={editorShellRef} className="editor-shell">
             <div ref={editorHostRef} className={`editor-host${meta.documentMode ? ' is-document-mode' : ''}`} />
+            {!meta.documentMode && selectedSlide && (
+              <button className="canvas-resize-handle" type="button" title="拖拽调整画布大小" onMouseDown={handleCanvasResizeStart}>
+                <span>
+                  {getSlideCanvasWidth(selectedSlide)} × {getSlideCanvasHeight(selectedSlide)}
+                </span>
+              </button>
+            )}
           </div>
         </section>
 
@@ -1673,7 +2884,7 @@ export default function App() {
             <section className="selection-card">
               <div className="selection-title">
                 <PanelRight size={16} />
-                <strong>{selectedSummary ? selectedSummary.label : '未选择元素'}</strong>
+                <strong>{selectedSummary ? selectedSummary.label : selectedCount > 1 ? `已选择 ${selectedCount} 个对象` : '未选择元素'}</strong>
               </div>
               {selectedSummary ? (
                 <>
@@ -1753,16 +2964,123 @@ export default function App() {
                     )}
                   </div>
                 </>
+              ) : selectedCount > 1 ? (
+                <>
+                  <dl className="selection-meta">
+                    {selectionItems.slice(0, 4).map((item) => (
+                      <div key={item.key}>
+                        <dt>对象</dt>
+                        <dd>{item.label}</dd>
+                      </div>
+                    ))}
+                    {selectionItems.length > 4 && (
+                      <div>
+                        <dt>更多</dt>
+                        <dd>还有 {selectionItems.length - 4} 个对象</dd>
+                      </div>
+                    )}
+                  </dl>
+                  <div className="batch-actions" aria-label="多选批量操作">
+                    <button type="button" onClick={() => handleAlignSelection('left')}>
+                      左对齐
+                    </button>
+                    <button type="button" onClick={() => handleAlignSelection('center')}>
+                      水平居中
+                    </button>
+                    <button type="button" onClick={() => handleAlignSelection('right')}>
+                      右对齐
+                    </button>
+                    <button type="button" onClick={() => handleAlignSelection('top')}>
+                      顶端
+                    </button>
+                    <button type="button" onClick={() => handleAlignSelection('middle')}>
+                      垂直居中
+                    </button>
+                    <button type="button" onClick={() => handleAlignSelection('bottom')}>
+                      底端
+                    </button>
+                    <button type="button" disabled={!canDistributeSelection} onClick={() => handleDistributeSelection('horizontal')}>
+                      水平分布
+                    </button>
+                    <button type="button" disabled={!canDistributeSelection} onClick={() => handleDistributeSelection('vertical')}>
+                      垂直分布
+                    </button>
+                    <button type="button" disabled={!canGroupSelection} onClick={handleGroupSelection}>
+                      组合
+                    </button>
+                    <button type="button" disabled={!canUngroupSelection} onClick={handleUngroupSelection}>
+                      取消组合
+                    </button>
+                  </div>
+                  <div className="quick-actions">
+                    <button type="button" onClick={handleDuplicateSelection} title="复制元素">
+                      <Copy size={15} />
+                      复制
+                    </button>
+                    <button type="button" onClick={handleDeleteSelection} title="删除元素">
+                      <Trash2 size={15} />
+                      删除
+                    </button>
+                    <button type="button" onClick={() => handleMoveSelectionLayer('front')} title="置于顶层">
+                      <BringToFront size={15} />
+                      顶层
+                    </button>
+                  </div>
+                </>
               ) : (
                 <p>无选中对象</p>
 	              )}
 	            </section>
 	            <div id="style-manager-panel" className={`manager-panel${selectedSummary ? '' : ' is-hidden'}`} />
 	            <div id="traits-panel" className={`manager-panel${selectedSummary ? '' : ' is-hidden'}`} />
-	          </div>
+          </div>
 
           <div className={`layers-pane${rightTab !== 'layers' ? ' is-hidden' : ''}`}>
-            <div id="layers-panel" />
+            <div className="layer-panel">
+              <div className="layer-panel-header">
+                <Layers2 size={16} />
+                <strong>对象图层</strong>
+                <span>{layerItems.length}</span>
+              </div>
+              {layerItems.length ? (
+                <div className="layer-list">
+                  {layerItems.map((item) => (
+                    <div
+                      key={item.key}
+                      className={`layer-row${selectedKeys.has(item.key) ? ' is-active' : ''}`}
+                      role="button"
+                      style={{ paddingLeft: `${10 + item.depth * 16}px` }}
+                      tabIndex={0}
+                      onClick={(event) => handleSelectLayer(item.key, event.shiftKey || event.metaKey || event.ctrlKey)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') handleSelectLayer(item.key, event.shiftKey || event.metaKey || event.ctrlKey);
+                      }}
+                    >
+                      <span className="layer-row-main">
+                        <strong>{item.label}</strong>
+                        <small>
+                          {item.group ? '组合' : item.tag}
+                          {item.hidden ? ' · 已隐藏' : ''}
+                        </small>
+                      </span>
+                      <span className="layer-row-actions" onClick={(event) => event.stopPropagation()}>
+                        <button type="button" title={item.hidden ? '显示' : '隐藏'} onClick={() => handleToggleLayerVisibility(item.key)}>
+                          {item.hidden ? <EyeOff size={14} /> : <Eye size={14} />}
+                        </button>
+                        <button type="button" title="上移图层" onClick={() => handleMoveLayerOrder(item.key, 'up')}>
+                          ↑
+                        </button>
+                        <button type="button" title="下移图层" onClick={() => handleMoveLayerOrder(item.key, 'down')}>
+                          ↓
+                        </button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="empty-note">当前页还没有可编辑对象</p>
+              )}
+            </div>
           </div>
 
           <div className={`page-pane${rightTab !== 'page' ? ' is-hidden' : ''}`}>
@@ -1877,12 +3195,31 @@ export default function App() {
                 <strong>{dirty ? '未保存' : '已保存'}</strong>
               </div>
             </div>
+            <section className="recent-files">
+              <div className="recent-files-title">
+                <FileClock size={15} />
+                <strong>最近打开</strong>
+              </div>
+              {recentFiles.length ? (
+                recentFiles.slice(0, RECENT_FILE_LIMIT).map((file) => (
+                  <button key={file.filePath} type="button" title={file.filePath} onClick={() => handleOpenRecentFile(file.filePath)}>
+                    <span>{file.name}</span>
+                    <small>{file.filePath}</small>
+                  </button>
+                ))
+              ) : (
+                <p>保存或打开 HTML 后会显示在这里</p>
+              )}
+            </section>
           </div>
         </aside>
       </main>
 
       <footer className="statusbar">
-        <span>{dirty ? '有未保存修改' : '已保存'}</span>
+        <span>
+          {dirty ? '有未保存修改' : '已保存'}
+          {lastAutoSavedAt ? ` · 已自动保存 ${new Date(lastAutoSavedAt).toLocaleTimeString()}` : ''}
+        </span>
         <span>
           HTML/CSS · {selectedSlide ? `${getSlideCanvasWidth(selectedSlide)}×${getSlideCanvasHeight(selectedSlide)}` : '页面'} · 本地文件
         </span>
@@ -1912,8 +3249,12 @@ export default function App() {
             <div className="context-control-row">
               <label className="context-select">
                 <Type size={14} />
-                <select value={contextFontValue} onChange={(event) => handleQuickStyleChange('font-family', event.target.value)}>
+                <select
+                  value={contextFontValue || customContextFont}
+                  onChange={(event) => handleQuickStyleChange('font-family', event.target.value)}
+                >
                   <option value="">字体</option>
+                  {customContextFont && <option value={customContextFont}>{customContextFont.split(',')[0].replaceAll('"', '')}</option>}
                   {FONT_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
@@ -2029,6 +3370,23 @@ export default function App() {
           <button type="button" role="menuitem" onClick={handleReplaceImage}>
             <Image size={15} />
             {contextMenu.isImage ? '替换图片' : '设置背景图'}
+          </button>
+          <div className="context-menu-separator" />
+          <button type="button" role="menuitem" disabled={!selectedCount} onClick={() => handleAlignSelection('left')}>
+            <AlignStartVertical size={15} />
+            左对齐
+          </button>
+          <button type="button" role="menuitem" disabled={!selectedCount} onClick={() => handleAlignSelection('center')}>
+            <AlignCenterVertical size={15} />
+            水平居中
+          </button>
+          <button type="button" role="menuitem" disabled={!canGroupSelection} onClick={handleGroupSelection}>
+            <Group size={15} />
+            组合
+          </button>
+          <button type="button" role="menuitem" disabled={!canUngroupSelection} onClick={handleUngroupSelection}>
+            <Ungroup size={15} />
+            取消组合
           </button>
           <div className="context-menu-separator" />
           <button type="button" role="menuitem" onClick={() => handleMoveSelectionLayer('front')}>

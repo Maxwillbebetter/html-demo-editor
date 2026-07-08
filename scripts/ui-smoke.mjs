@@ -96,6 +96,7 @@ app.whenReady().then(async () => {
           new frameWindow.MouseEvent('contextmenu', {
             bubbles: true,
             cancelable: true,
+            view: frameWindow,
             clientX: 48,
             clientY: 48
           })
@@ -114,7 +115,115 @@ app.whenReady().then(async () => {
         ) {
           failures.push('canvas context menu should expose PPT-like quick style controls');
         }
+        const fontSizeValue = Number(menu?.querySelector('input[aria-label="字号"]')?.value || 0);
+        if (contextTarget.matches('h1') && fontSizeValue < 50) {
+          failures.push('context menu should show the selected heading computed font size, not the fallback size');
+        }
         document.body.click();
+
+        const beforeLeft = Number.parseFloat(frameWindow.getComputedStyle(contextTarget).left);
+        frameDoc.dispatchEvent(
+          new frameWindow.KeyboardEvent('keydown', {
+            bubbles: true,
+            cancelable: true,
+            key: 'ArrowRight'
+          })
+        );
+        await delay(80);
+        const afterLeft = Number.parseFloat(contextTarget.style.left || frameWindow.getComputedStyle(contextTarget).left);
+        if (Number.isFinite(beforeLeft) && Number.isFinite(afterLeft) && afterLeft <= beforeLeft) {
+          failures.push('arrow keys should nudge the selected element');
+        }
+
+        const paragraph = frameDoc.querySelector('p');
+        if (!paragraph) {
+          failures.push('default canvas should include a paragraph for multi-select checks');
+        } else {
+          const multiTarget = frameDoc.querySelector('h1, h2, p, button, span') || contextTarget;
+          multiTarget.dispatchEvent(
+            new frameWindow.MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            view: frameWindow,
+            clientX: 40,
+            clientY: 40
+          })
+          );
+          paragraph.dispatchEvent(
+            new frameWindow.MouseEvent('click', {
+              bubbles: true,
+              cancelable: true,
+              view: frameWindow,
+              shiftKey: true,
+              clientX: 44,
+              clientY: 120
+            })
+          );
+          await delay(300);
+          if (!document.body.innerText.includes('已选 2') && !document.body.innerText.includes('已选择 2')) {
+            failures.push(
+              'shift-click should multi-select canvas elements: ' +
+                JSON.stringify({
+                  toolbarText: document.querySelector('.canvas-tools')?.textContent || '',
+                  marked: Array.from(frameDoc.querySelectorAll('[data-html-demo-multi-selected="true"]')).map((element) => ({
+                    tag: element.tagName,
+                    text: element.textContent.trim().slice(0, 40)
+                  })),
+                  h1Connected: multiTarget.isConnected,
+                  pConnected: paragraph.isConnected,
+                  toast: document.querySelector('.toast')?.textContent || ''
+                })
+            );
+          }
+          const groupButton = document.querySelector('.canvas-tools button[title="组合"]');
+          if (!groupButton || groupButton.disabled) {
+            failures.push('multi-select should enable group action');
+          } else {
+            const beforeGroupState = {
+              selectedText: document.body.innerText.match(/已选 \\d|已选择 \\d/)?.[0],
+              marked: Array.from(frameDoc.querySelectorAll('[data-html-demo-multi-selected="true"]')).map((element) => ({
+                tag: element.tagName,
+                text: element.textContent.trim().slice(0, 40)
+              })),
+              toast: document.querySelector('.toast')?.textContent || ''
+            };
+            groupButton.click();
+            await delay(500);
+            const groupedFrameDoc = document.querySelector('.gjs-frame')?.contentDocument;
+            if (!groupedFrameDoc?.querySelector('[data-html-demo-group="true"]')) {
+              failures.push(
+                'group action should wrap selected elements in an editable group: ' +
+                  JSON.stringify({
+                    beforeGroupState,
+                    selectedText: document.body.innerText.match(/已选 \\d|已选择 \\d/)?.[0],
+                    groupDisabled: groupButton.disabled,
+                    markedAfter: Array.from(groupedFrameDoc?.querySelectorAll('[data-html-demo-multi-selected="true"]') || []).map((element) => ({
+                      tag: element.tagName,
+                      text: element.textContent.trim().slice(0, 40)
+                    })),
+                    toast: document.querySelector('.toast')?.textContent || '',
+                    slideHtml: groupedFrameDoc?.querySelector('.deck-slide')?.innerHTML?.slice(0, 260)
+                  })
+              );
+            }
+            const ungroupButton = document.querySelector('.canvas-tools button[title="取消组合"]');
+            if (!ungroupButton || ungroupButton.disabled) {
+              failures.push('group selection should enable ungroup action');
+            } else {
+              ungroupButton.click();
+              await delay(500);
+              const ungroupedFrameDoc = document.querySelector('.gjs-frame')?.contentDocument;
+              if (ungroupedFrameDoc?.querySelector('[data-html-demo-group="true"]')) {
+                failures.push('ungroup action should unwrap the selected group');
+              }
+            }
+          }
+          document.querySelector('.right-pane .pane-tabs button:nth-child(2)')?.click();
+          await delay(80);
+          if (!document.body.innerText.includes('对象图层')) {
+            failures.push('layer tab should expose a productized object layer panel');
+          }
+        }
       }
 
       for (let i = 0; i < 3; i += 1) {

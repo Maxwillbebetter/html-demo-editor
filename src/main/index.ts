@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, type MessageBoxOptions, type OpenDialogOptions, type SaveDialogOptions } from 'electron';
-import { mkdir, readFile, readdir, stat, writeFile, cp } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, writeFile, cp, unlink } from 'node:fs/promises';
 import { basename, dirname, extname, join, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -23,11 +23,32 @@ interface PresentPayload {
   html: string;
   baseDir?: string;
   fullscreen?: boolean;
+  startSlideIndex?: number;
+}
+
+interface AutoSavePayload {
+  html: string;
+  title?: string;
+  filePath?: string;
+  baseDir?: string;
+  sourceName?: string;
+}
+
+interface AutoSaveRecord extends AutoSavePayload {
+  savedAt: string;
+}
+
+interface RecentFileRecord {
+  filePath: string;
+  name: string;
+  baseDir: string;
+  openedAt: string;
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 let mainWindow: BrowserWindow | null = null;
 let presenterWindow: BrowserWindow | null = null;
+let pendingOpenPath: string | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -50,6 +71,13 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
   }
+
+  mainWindow.webContents.once('did-finish-load', () => {
+    if (pendingOpenPath) {
+      mainWindow?.webContents.send('project:open-path-requested', pendingOpenPath);
+      pendingOpenPath = null;
+    }
+  });
 }
 
 function escapeAttribute(value: string): string {
@@ -77,6 +105,45 @@ async function readHtmlFile(filePath: string) {
     html,
     name: basename(filePath)
   };
+}
+
+function getAutoSavePath(): string {
+  return join(app.getPath('userData'), 'autosave.json');
+}
+
+function getRecentFilesPath(): string {
+  return join(app.getPath('userData'), 'recent-files.json');
+}
+
+function findLaunchOpenPath(argv: string[]): string | null {
+  const candidate = argv.find((item) => {
+    if (!item || item.startsWith('-')) return false;
+    const ext = extname(item).toLowerCase();
+    return ['.html', '.htm'].includes(ext);
+  });
+  return candidate || null;
+}
+
+async function listRecentFiles(): Promise<RecentFileRecord[]> {
+  try {
+    const raw = await readFile(getRecentFilesPath(), 'utf8');
+    const parsed = JSON.parse(raw) as RecentFileRecord[];
+    return Array.isArray(parsed) ? parsed.slice(0, 8) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function addRecentFile(filePath: string): Promise<void> {
+  const record: RecentFileRecord = {
+    filePath,
+    name: basename(filePath),
+    baseDir: dirname(filePath),
+    openedAt: new Date().toISOString()
+  };
+  const existing = (await listRecentFiles()).filter((item) => item.filePath !== filePath);
+  await mkdir(dirname(getRecentFilesPath()), { recursive: true });
+  await writeFile(getRecentFilesPath(), JSON.stringify([record, ...existing].slice(0, 8), null, 2), 'utf8');
 }
 
 async function readProjectPath(filePath: string) {
@@ -416,7 +483,9 @@ ipcMain.handle('project:open-html', async () => {
   const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
 
   if (result.canceled || result.filePaths.length === 0) return null;
-  return readHtmlFile(result.filePaths[0]);
+  const opened = await readHtmlFile(result.filePaths[0]);
+  await addRecentFile(opened.filePath);
+  return opened;
 });
 
 ipcMain.handle('project:open-folder', async () => {
@@ -440,13 +509,18 @@ ipcMain.handle('project:open-folder', async () => {
     return null;
   }
 
-  return readHtmlFile(entry);
+  const opened = await readHtmlFile(entry);
+  await addRecentFile(opened.filePath);
+  return opened;
 });
 
 ipcMain.handle('project:open-path', async (_event, filePath: string) => {
   try {
     const result = await readProjectPath(filePath);
-    if (result) return result;
+    if (result) {
+      await addRecentFile(result.filePath);
+      return result;
+    }
   } catch {
     // Fall through to the user-facing warning below.
   }
@@ -461,12 +535,15 @@ ipcMain.handle('project:open-path', async (_event, filePath: string) => {
   return null;
 });
 
+ipcMain.handle('project:list-recent', async () => listRecentFiles());
+
 ipcMain.handle('project:save', async (_event, payload: SavePayload) => {
   const filePath = payload.filePath ?? (await chooseSavePath(payload.defaultName));
   if (!filePath) return null;
 
   await writeFile(filePath, payload.html, 'utf8');
   await copyReferencedAssets(payload.sourceBaseDir, dirname(filePath), payload.assetPaths);
+  await addRecentFile(filePath);
   return { filePath };
 });
 
@@ -476,7 +553,37 @@ ipcMain.handle('project:save-as', async (_event, payload: SavePayload) => {
 
   await writeFile(filePath, payload.html, 'utf8');
   await copyReferencedAssets(payload.sourceBaseDir, dirname(filePath), payload.assetPaths);
+  await addRecentFile(filePath);
   return { filePath };
+});
+
+ipcMain.handle('project:auto-save', async (_event, payload: AutoSavePayload) => {
+  const filePath = getAutoSavePath();
+  const record: AutoSaveRecord = {
+    ...payload,
+    savedAt: new Date().toISOString()
+  };
+  await mkdir(dirname(filePath), { recursive: true });
+  await writeFile(filePath, JSON.stringify(record), 'utf8');
+  return { savedAt: record.savedAt };
+});
+
+ipcMain.handle('project:load-autosave', async () => {
+  try {
+    const raw = await readFile(getAutoSavePath(), 'utf8');
+    return JSON.parse(raw) as AutoSaveRecord;
+  } catch {
+    return null;
+  }
+});
+
+ipcMain.handle('project:clear-autosave', async () => {
+  try {
+    await unlink(getAutoSavePath());
+  } catch {
+    // Missing autosave files are fine.
+  }
+  return true;
 });
 
 ipcMain.handle('project:export-package', async (_event, payload: ExportPayload) => {
@@ -551,10 +658,40 @@ ipcMain.handle('project:present', async (_event, payload: PresentPayload) => {
     }
   });
 
-  await presenterWindow.loadFile(presentPath);
+  const startSlideIndex = Math.max(0, Math.floor(payload.startSlideIndex ?? 0));
+  const startHash = startSlideIndex > 0 ? `#/${startSlideIndex + 1}` : '';
+  await presenterWindow.loadURL(`${pathToFileURL(presentPath).href}${startHash}`);
+});
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  pendingOpenPath = findLaunchOpenPath(process.argv);
+  app.on('second-instance', (_event, argv) => {
+    const filePath = findLaunchOpenPath(argv);
+    if (!filePath) return;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+      mainWindow.webContents.send('project:open-path-requested', filePath);
+    } else {
+      pendingOpenPath = filePath;
+    }
+  });
+}
+
+app.on('open-file', (event, filePath) => {
+  event.preventDefault();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('project:open-path-requested', filePath);
+  } else {
+    pendingOpenPath = filePath;
+  }
 });
 
 app.whenReady().then(() => {
+  if (!hasSingleInstanceLock) return;
   createWindow();
 
   app.on('activate', () => {

@@ -16,12 +16,15 @@ HTML Demo Editor 是一个开源的桌面工具，优先面向 Windows 11 使用
 - 自动识别 `section` / reveal.js 风格 slide / 已导出的 `deck-slide`。
 - 页面缩略图列表、新增、复制、删除、重命名、拖拽排序。
 - GrapesJS 画布中直接编辑文字、拖拽组件、调整样式。
+- PPT 风格画布操作：多选、框选、方向键微移、8 向缩放手柄、对齐、分布、组合/取消组合、智能参考线和网格吸附。
+- 右键快捷编辑：字体、字号、加粗、斜体、下划线、文字色、背景色、图层顺序、复制和删除。
 - 左侧演示材料组件库：标题、正文、图片、卡片、三栏、指标卡、表格、引用、分割线、Logo、图文、时间线、柱状图占位。
-- 右侧属性、图层、页面面板。
+- 右侧属性、对象图层、页面面板，属性会回显选中元素的实际计算值。
 - 图片替换为 data URL，便于导出独立 HTML。
 - 高级 HTML/CSS 代码视图。
-- 保存为 HTML、另存为、导出独立文件夹。
-- 全屏演示和窗口预览。
+- 保存为 HTML、另存为、导出独立文件夹、自动保存和启动恢复。
+- 最近文件、拖拽打开、本机 `.html/.htm` 文件关联。
+- 全屏演示和窗口预览，支持比例调整、点击翻页、退出按钮、激光笔/画笔/隐藏指针、黑屏/白屏。
 
 ## 适合谁用
 
@@ -42,8 +45,8 @@ GitHub Actions 会同时构建两个桌面版本：
 
 如果只是给业务同事使用，优先发免安装版：
 
-- `HTML-Demo-Editor-0.1.0-Portable.exe`：双击直接打开，不需要安装。
-- `HTML-Demo-Editor-0.1.0-Setup.exe`：安装到 Windows 后再使用。
+- `HTML-Demo-Editor-0.1.1-Portable.exe`：双击直接打开，不需要安装。
+- `HTML-Demo-Editor-0.1.1-Setup.exe`：安装到 Windows 后再使用。
 
 这两个文件都会在 Windows 打包后出现在 `release/` 目录。
 
@@ -120,8 +123,8 @@ npm run dist:win
 
 打包产物会输出到 `release/`，包含：
 
-- `HTML-Demo-Editor-0.1.0-Setup.exe`
-- `HTML-Demo-Editor-0.1.0-Portable.exe`
+- `HTML-Demo-Editor-0.1.1-Setup.exe`
+- `HTML-Demo-Editor-0.1.1-Portable.exe`
 
 ## macOS 打包
 
@@ -131,8 +134,8 @@ npm run dist:mac
 
 打包产物会输出到 `release/`，包含：
 
-- `HTML-Demo-Editor-0.1.0-Mac-arm64.dmg` / `.zip`
-- `HTML-Demo-Editor-0.1.0-Mac-x64.dmg` / `.zip`，视当前 runner/机器架构而定
+- `HTML-Demo-Editor-0.1.1-Mac-arm64.dmg` / `.zip`
+- `HTML-Demo-Editor-0.1.1-Mac-x64.dmg` / `.zip`，视当前 runner/机器架构而定
 
 ## 开源许可
 

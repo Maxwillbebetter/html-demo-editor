@@ -36,8 +36,14 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Smoke test asset copy
+        run: npm run test:assets
+
       - name: Smoke test import/export
         run: npm run test:smoke
+
+      - name: UI smoke test
+        run: npm run test:ui
 
       - name: Build macOS app
         run: npm run dist:mac
@@ -55,7 +61,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
-        run: gh release upload "$RELEASE_TAG" release/*.dmg release/*.zip --clobber
+        run: |
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "Desktop packages for HTML Demo Editor $RELEASE_TAG." || true
+          gh release upload "$RELEASE_TAG" release/*.dmg release/*.zip --clobber
 
   build-windows:
     runs-on: windows-latest
@@ -76,8 +85,14 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Smoke test asset copy
+        run: npm run test:assets
+
       - name: Smoke test import/export
         run: npm run test:smoke
+
+      - name: UI smoke test
+        run: npm run test:ui
 
       - name: Build Windows app
         run: npm run dist:win
@@ -93,4 +108,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
-        run: gh release upload "$env:RELEASE_TAG" release/*.exe --clobber
+        run: |
+          gh release view "$env:RELEASE_TAG" > $null 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$env:RELEASE_TAG" --title "$env:RELEASE_TAG" --notes "Desktop packages for HTML Demo Editor $env:RELEASE_TAG."
+          }
+          gh release upload "$env:RELEASE_TAG" release/*.exe --clobber

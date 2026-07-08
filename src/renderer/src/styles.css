@@ -215,9 +215,16 @@ button {
   box-shadow: inset 0 0 0 1px #d9e1e7;
 }
 
+.canvas-tools button:disabled,
+.quick-actions button:disabled,
+.batch-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
 .slides-header button:hover,
 .slide-actions button:hover,
-.canvas-tools button:hover {
+.canvas-tools button:hover:not(:disabled) {
   color: #0f766e;
   box-shadow: inset 0 0 0 1px #9ccdc6;
 }
@@ -396,7 +403,22 @@ button {
 .canvas-tools {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+}
+
+.selection-count {
+  min-width: 58px;
+  padding: 0 7px;
+  color: #5d6878;
+  text-align: right;
+  font-size: 12px;
+}
+
+.canvas-tools-divider {
+  width: 1px;
+  height: 24px;
+  margin: 0 3px;
+  background: #d8e0e7;
 }
 
 .toggle-row {
@@ -664,6 +686,29 @@ button {
   box-shadow: inset 0 0 0 1px #9ccdc6;
 }
 
+.batch-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8ee;
+}
+
+.batch-actions button {
+  height: 30px;
+  border-radius: 7px;
+  background: #f5f7f9;
+  color: #3c4858;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px #dce3ea;
+}
+
+.batch-actions button:hover:not(:disabled) {
+  color: #0f766e;
+  box-shadow: inset 0 0 0 1px #9ccdc6;
+}
+
 .manager-panel {
   margin-top: 10px;
   border: 1px solid #dce3ea;
@@ -700,12 +745,115 @@ button {
   color: #26313f;
 }
 
-#layers-panel {
+.layer-panel {
+  display: grid;
   min-height: 320px;
   border: 1px solid #dce3ea;
   border-radius: 8px;
   overflow: hidden;
   background: #ffffff;
+}
+
+.layer-panel-header {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 10px;
+  border-bottom: 1px solid #e2e8ee;
+  color: #26313f;
+}
+
+.layer-panel-header strong {
+  font-size: 13px;
+}
+
+.layer-panel-header span {
+  color: #728092;
+  font-size: 12px;
+}
+
+.layer-list {
+  display: grid;
+  align-content: start;
+  max-height: calc(100vh - 190px);
+  overflow: auto;
+}
+
+.layer-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 46px;
+  padding-top: 6px;
+  padding-right: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #edf1f5;
+  background: #ffffff;
+  color: #26313f;
+  cursor: pointer;
+}
+
+.layer-row:hover,
+.layer-row.is-active {
+  background: #eef7f6;
+}
+
+.layer-row.is-active {
+  box-shadow: inset 3px 0 0 #0f766e;
+}
+
+.layer-row-main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.layer-row-main strong,
+.layer-row-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layer-row-main strong {
+  font-size: 13px;
+}
+
+.layer-row-main small {
+  color: #728092;
+  font-size: 11px;
+}
+
+.layer-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.layer-row-actions button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #536071;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px #dce3ea;
+}
+
+.layer-row-actions button:hover {
+  color: #0f766e;
+  box-shadow: inset 0 0 0 1px #9ccdc6;
+}
+
+.empty-note {
+  margin: 14px;
+  color: #728092;
+  font-size: 13px;
 }
 
 .page-pane {
@@ -788,6 +936,64 @@ button {
   overflow-wrap: anywhere;
   color: #293647;
   font-size: 13px;
+}
+
+.recent-files {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 10px;
+  border: 1px solid #dce3ea;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.recent-files-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #26313f;
+  font-size: 13px;
+}
+
+.recent-files button {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px;
+  border-radius: 7px;
+  background: #f8fafb;
+  color: #26313f;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px #e2e8ee;
+}
+
+.recent-files button:hover {
+  color: #0f766e;
+  box-shadow: inset 0 0 0 1px #9ccdc6;
+}
+
+.recent-files span,
+.recent-files small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-files span {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.recent-files small,
+.recent-files p {
+  color: #728092;
+  font-size: 11px;
+}
+
+.recent-files p {
+  margin: 0;
 }
 
 .statusbar {

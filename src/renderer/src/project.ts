@@ -84,13 +84,14 @@ body.htmlppt-deck.is-scroll-mode {
 }
 body.htmlppt-deck > .deck-slide {
   box-sizing: border-box;
-  display: none;
+  display: block;
   width: var(--htmlppt-slide-width, ${DEFAULT_CANVAS_WIDTH}px);
   min-height: var(--htmlppt-slide-height, ${DEFAULT_CANVAS_HEIGHT}px);
   margin: 0;
   opacity: 0;
   pointer-events: none;
   visibility: hidden;
+  transition: opacity 250ms ease;
 }
 body.htmlppt-deck > .deck-slide.is-active {
   display: block;
@@ -99,6 +100,9 @@ body.htmlppt-deck > .deck-slide.is-active {
   visibility: visible;
 }
 body.htmlppt-deck.is-fit-mode > .deck-slide.is-active {
+  pointer-events: auto;
+}
+body.htmlppt-deck.is-fit-mode > .deck-slide {
   position: fixed;
   left: 50%;
   top: 50%;
@@ -106,6 +110,15 @@ body.htmlppt-deck.is-fit-mode > .deck-slide.is-active {
   overflow: hidden;
   transform: translate(-50%, -50%) scale(var(--deck-scale));
   transform-origin: center center;
+}
+body.htmlppt-deck.is-scroll-mode > .deck-slide {
+  position: fixed;
+  left: -200vw;
+  top: 0;
+  height: auto;
+  overflow: visible;
+  transform: translateX(-50%) scale(var(--deck-scale));
+  transform-origin: top center;
 }
 body.htmlppt-deck.is-scroll-mode > .deck-slide.is-active {
   position: relative;
@@ -133,13 +146,16 @@ body.htmlppt-deck > .deck-slide * {
   background: rgba(15, 18, 24, 0.72);
   color: #ffffff;
   font: 13px/1.2 "Segoe UI", Arial, sans-serif;
-  opacity: 0.82;
+  opacity: 0;
+  pointer-events: none;
   transition: opacity 160ms ease;
   z-index: 1000;
 }
+.htmlppt-controls-active .presenter-hud,
 .presenter-hud:hover,
 .presenter-hud:focus-within {
   opacity: 1;
+  pointer-events: auto;
 }
 .presenter-hud button {
   min-width: 30px;
@@ -833,6 +849,8 @@ function presenterRuntime(): string {
   let manualScale = 1;
   let pointerMode = 'auto';
   let idleTimer = 0;
+  let controlsTimer = 0;
+  let pendingJump = '';
   let drawing = false;
 
   function slideSize(slide) {
@@ -913,6 +931,14 @@ function presenterRuntime(): string {
     if (!wasActive) blank.classList.add(className);
   }
 
+  function showControls() {
+    deck.classList.add('htmlppt-controls-active');
+    window.clearTimeout(controlsTimer);
+    controlsTimer = window.setTimeout(() => {
+      deck.classList.remove('htmlppt-controls-active');
+    }, 2000);
+  }
+
   function resizeInk() {
     if (!ink || !inkContext) return;
     const ratio = window.devicePixelRatio || 1;
@@ -967,6 +993,7 @@ function presenterRuntime(): string {
     resizeInk();
   });
   window.addEventListener('pointermove', (event) => {
+    showControls();
     markPointerActive();
     if (laser) laser.style.transform = 'translate(' + event.clientX + 'px,' + event.clientY + 'px)';
     if (pointerMode === 'pen' && drawing && inkContext) {
@@ -983,9 +1010,37 @@ function presenterRuntime(): string {
   window.addEventListener('pointerup', () => {
     drawing = false;
   });
+  window.addEventListener('click', (event) => {
+    const target = event.target;
+    if (target?.closest?.('.presenter-hud, a, button, input, select, textarea, [contenteditable="true"]')) return;
+    if (pointerMode === 'pen') return;
+    event.preventDefault();
+    clearBlank();
+    show(index + 1);
+  });
+  window.addEventListener('contextmenu', (event) => {
+    const target = event.target;
+    if (target?.closest?.('.presenter-hud, input, select, textarea')) return;
+    event.preventDefault();
+    clearBlank();
+    show(index - 1);
+  });
   window.addEventListener('keydown', (event) => {
     const key = event.key.toLowerCase();
     const mode = currentMode();
+    showControls();
+    if (/^\\d$/.test(key)) {
+      pendingJump = (pendingJump + key).slice(0, 4);
+      event.preventDefault();
+      return;
+    }
+    if (key === 'enter' && pendingJump) {
+      event.preventDefault();
+      show(Number(pendingJump) - 1);
+      pendingJump = '';
+      return;
+    }
+    if (key !== 'enter') pendingJump = '';
     if (mode === 'scroll' && ['arrowdown', 'pagedown', ' '].includes(key)) {
       event.preventDefault();
       clearBlank();
@@ -1011,6 +1066,11 @@ function presenterRuntime(): string {
       clearBlank();
       show(index - 1);
     }
+    if (key === 'backspace') {
+      event.preventDefault();
+      clearBlank();
+      show(index - 1);
+    }
     if (key === 'home') show(0);
     if (key === 'end') show(slides.length - 1);
     if (key === 'b' || key === '.') toggleBlank('black');
@@ -1028,6 +1088,7 @@ function presenterRuntime(): string {
   resizeInk();
   setPointerMode('auto');
   markPointerActive();
+  showControls();
   show(hashMatch ? Number(hashMatch[1]) - 1 : 0);
 })();
 </script>`;
