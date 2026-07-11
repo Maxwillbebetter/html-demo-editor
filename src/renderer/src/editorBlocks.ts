@@ -112,7 +112,7 @@ export function registerEditorBlocks(editor: Editor): void {
     label: '数据指标卡',
     category: '数据',
     content:
-      '<div style="position:absolute;left:76px;top:210px;width:300px;padding:28px;border:1px solid #dce4eb;border-radius:8px;background:#f8fafb;"><div data-gjs-type="text" style="color:#0f766e;font-size:58px;line-height:1;font-weight:800;">42%</div><div data-gjs-type="text" style="margin-top:12px;color:#596575;font-size:21px;line-height:1.35;">关键指标说明</div></div>'
+      '<div style="position:absolute;left:76px;top:210px;width:300px;padding:28px;border:1px solid #dce4eb;border-radius:8px;background:#f8fafb;"><div data-gjs-type="text" style="color:#007aff;font-size:58px;line-height:1;font-weight:800;">42%</div><div data-gjs-type="text" style="margin-top:12px;color:#596575;font-size:21px;line-height:1.35;">关键指标说明</div></div>'
   });
 
   bm.add('demo-table', {
@@ -126,7 +126,7 @@ export function registerEditorBlocks(editor: Editor): void {
     label: 'Quote 引用',
     category: '文本',
     content:
-      '<blockquote style="position:absolute;left:112px;top:210px;width:880px;margin:0;padding:34px 42px;border-left:8px solid #d9852b;background:#fbf7f0;color:#333f4e;font-size:30px;line-height:1.38;font-weight:650;">“把 HTML 的表现力留住，把编辑门槛降到 PPT 水平。”</blockquote>'
+      '<blockquote style="position:absolute;left:112px;top:210px;width:880px;margin:0;padding:34px 42px;border-left:8px solid #ff9f0a;background:#fff7ed;color:#333f4e;font-size:30px;line-height:1.38;font-weight:650;">“把 HTML 的表现力留住，把编辑门槛降到 PPT 水平。”</blockquote>'
   });
 
   bm.add('demo-divider', {
@@ -152,13 +152,13 @@ export function registerEditorBlocks(editor: Editor): void {
     label: '时间线',
     category: '模块',
     content:
-      '<div style="position:absolute;left:110px;top:190px;width:980px;display:grid;grid-template-columns:repeat(4,1fr);gap:0;"><div style="border-top:4px solid #0f766e;padding-top:20px;"><b data-gjs-type="text" style="font-size:24px;color:#0f766e;">Q1</b><p data-gjs-type="text" style="margin:10px 24px 0 0;color:#596575;font-size:19px;line-height:1.35;">需求验证</p></div><div style="border-top:4px solid #d9852b;padding-top:20px;"><b data-gjs-type="text" style="font-size:24px;color:#d9852b;">Q2</b><p data-gjs-type="text" style="margin:10px 24px 0 0;color:#596575;font-size:19px;line-height:1.35;">MVP 发布</p></div><div style="border-top:4px solid #64748b;padding-top:20px;"><b data-gjs-type="text" style="font-size:24px;color:#64748b;">Q3</b><p data-gjs-type="text" style="margin:10px 24px 0 0;color:#596575;font-size:19px;line-height:1.35;">模板扩展</p></div><div style="border-top:4px solid #7c3aed;padding-top:20px;"><b data-gjs-type="text" style="font-size:24px;color:#7c3aed;">Q4</b><p data-gjs-type="text" style="margin:10px 0 0 0;color:#596575;font-size:19px;line-height:1.35;">AI 辅助</p></div></div>'
+      '<div style="position:absolute;left:110px;top:190px;width:980px;display:grid;grid-template-columns:repeat(4,1fr);gap:0;"><div style="border-top:4px solid #007aff;padding-top:20px;"><b data-gjs-type="text" style="font-size:24px;color:#007aff;">Q1</b><p data-gjs-type="text" style="margin:10px 24px 0 0;color:#596575;font-size:19px;line-height:1.35;">需求验证</p></div><div style="border-top:4px solid #ff9f0a;padding-top:20px;"><b data-gjs-type="text" style="font-size:24px;color:#ff9f0a;">Q2</b><p data-gjs-type="text" style="margin:10px 24px 0 0;color:#596575;font-size:19px;line-height:1.35;">MVP 发布</p></div><div style="border-top:4px solid #8e8e93;padding-top:20px;"><b data-gjs-type="text" style="font-size:24px;color:#8e8e93;">Q3</b><p data-gjs-type="text" style="margin:10px 24px 0 0;color:#596575;font-size:19px;line-height:1.35;">模板扩展</p></div><div style="border-top:4px solid #5e5ce6;padding-top:20px;"><b data-gjs-type="text" style="font-size:24px;color:#5e5ce6;">Q4</b><p data-gjs-type="text" style="margin:10px 0 0 0;color:#596575;font-size:19px;line-height:1.35;">AI 辅助</p></div></div>'
   });
 
   bm.add('demo-bar-chart', {
     label: '柱状图占位',
     category: '数据',
     content:
-      '<div style="position:absolute;left:90px;top:170px;width:720px;height:380px;padding:28px;border:1px solid #dce4eb;border-radius:8px;background:#ffffff;"><div data-gjs-type="text" style="font-size:24px;font-weight:700;color:#18202b;">简单柱状图</div><div style="position:absolute;left:54px;right:42px;bottom:46px;height:250px;display:flex;align-items:end;gap:22px;border-left:2px solid #cbd5df;border-bottom:2px solid #cbd5df;padding-left:24px;"><div style="width:72px;height:46%;background:#0f766e;border-radius:6px 6px 0 0;"></div><div style="width:72px;height:72%;background:#d9852b;border-radius:6px 6px 0 0;"></div><div style="width:72px;height:58%;background:#64748b;border-radius:6px 6px 0 0;"></div><div style="width:72px;height:86%;background:#7c3aed;border-radius:6px 6px 0 0;"></div></div></div>'
+      '<div style="position:absolute;left:90px;top:170px;width:720px;height:380px;padding:28px;border:1px solid #dce4eb;border-radius:8px;background:#ffffff;"><div data-gjs-type="text" style="font-size:24px;font-weight:700;color:#18202b;">简单柱状图</div><div style="position:absolute;left:54px;right:42px;bottom:46px;height:250px;display:flex;align-items:end;gap:22px;border-left:2px solid #cbd5df;border-bottom:2px solid #cbd5df;padding-left:24px;"><div style="width:72px;height:46%;background:#007aff;border-radius:6px 6px 0 0;"></div><div style="width:72px;height:72%;background:#ff9f0a;border-radius:6px 6px 0 0;"></div><div style="width:72px;height:58%;background:#8e8e93;border-radius:6px 6px 0 0;"></div><div style="width:72px;height:86%;background:#5e5ce6;border-radius:6px 6px 0 0;"></div></div></div>'
   });
 }

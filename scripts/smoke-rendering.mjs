@@ -87,12 +87,21 @@ assert(longParsed.meta.documentMode === true, 'long report with multiple normal 
 assert(longParsed.slides.length === 1, 'normal sections must not be guessed as slides');
 assert(longParsed.slides[0].canvasHeight >= 1600, 'long report should get a tall editable canvas');
 
-const interactiveParsed = parseHtmlProject(interactiveFixture, 'index.html', '/tmp/qa/interactive/index.html', '/tmp/qa/interactive');
+const interactiveParsed = parseHtmlProject(
+  interactiveFixture,
+  'index.html',
+  '/tmp/qa/interactive/index.html',
+  '/tmp/qa/interactive',
+  'html-demo-local://fixture/'
+);
 const interactiveExport = buildExportHtml(interactiveParsed.slides, interactiveParsed.meta);
+const interactivePreview = buildSlidePreviewDoc(interactiveParsed.slides[0], interactiveParsed.meta);
 const interactiveAssets = collectReferencedAssetPaths(interactiveExport);
 assert(interactiveParsed.meta.headExtras.includes('./styles.css'), 'interactive fixture should preserve linked CSS');
 assert(interactiveParsed.meta.headExtras.includes('./css/nested.css'), 'interactive fixture should preserve nested linked CSS');
 assert(interactiveParsed.meta.bodyScripts.includes('./scripts.js'), 'interactive fixture should preserve linked JS');
+assert(interactivePreview.includes('<base href="html-demo-local://fixture/">'), 'editor previews should use the guarded runtime asset base');
+assert(!interactiveExport.includes('html-demo-local://'), 'saved HTML should not persist editor-only local protocol URLs');
 assert(interactiveAssets.includes('./styles.css'), 'export asset scan should include linked CSS');
 assert(interactiveAssets.includes('./css/nested.css'), 'export asset scan should include nested linked CSS');
 assert(interactiveAssets.includes('./scripts.js'), 'export asset scan should include linked JS');

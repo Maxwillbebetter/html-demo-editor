@@ -1,6 +1,17 @@
-import { app, BrowserWindow, dialog, ipcMain, type MessageBoxOptions, type OpenDialogOptions, type SaveDialogOptions } from 'electron';
-import { mkdir, readFile, readdir, stat, writeFile, cp, unlink } from 'node:fs/promises';
-import { basename, dirname, extname, join, sep } from 'node:path';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  net,
+  protocol,
+  type MessageBoxOptions,
+  type OpenDialogOptions,
+  type SaveDialogOptions
+} from 'electron';
+import { mkdir, readFile, readdir, realpath, stat, writeFile, cp, unlink } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { copyReferencedAssets } from './assets';
@@ -46,9 +57,60 @@ interface RecentFileRecord {
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const LOCAL_ASSET_SCHEME = 'html-demo-local';
+const localAssetRoots = new Map<string, string>();
+const localAssetTokens = new Map<string, string>();
 let mainWindow: BrowserWindow | null = null;
 let presenterWindow: BrowserWindow | null = null;
 let pendingOpenPath: string | null = null;
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: LOCAL_ASSET_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      bypassCSP: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true
+    }
+  }
+]);
+
+function registerLocalAssetRoot(baseDir?: string): string | undefined {
+  if (!baseDir) return undefined;
+  const root = resolve(baseDir);
+  let token = localAssetTokens.get(root);
+  if (!token) {
+    token = randomUUID();
+    localAssetTokens.set(root, token);
+    localAssetRoots.set(token, root);
+  }
+  return `${LOCAL_ASSET_SCHEME}://${token}/`;
+}
+
+function registerLocalAssetProtocol(): void {
+  protocol.handle(LOCAL_ASSET_SCHEME, async (request) => {
+    try {
+      const url = new URL(request.url);
+      const root = localAssetRoots.get(url.hostname);
+      if (!root) return new Response('Unknown project', { status: 404 });
+
+      const requestedPath = decodeURIComponent(url.pathname).replace(/^\/+/, '');
+      const filePath = resolve(root, requestedPath);
+      const [realRoot, realFilePath] = await Promise.all([realpath(root), realpath(filePath)]);
+      const relativePath = relative(realRoot, realFilePath);
+      if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
+        return new Response('Blocked path', { status: 403 });
+      }
+
+      return await net.fetch(pathToFileURL(realFilePath).href);
+    } catch {
+      return new Response('Resource not found', { status: 404 });
+    }
+  });
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -85,11 +147,11 @@ function escapeAttribute(value: string): string {
 }
 
 function withBaseHref(html: string, baseDir?: string): string {
-  if (!baseDir) return html;
-  const baseHref = pathToFileURL(`${baseDir}${sep}`).href;
+  const baseHref = registerLocalAssetRoot(baseDir);
+  if (!baseHref) return html;
   const baseTag = `<base href="${escapeAttribute(baseHref)}">`;
 
-  if (/<base\s/i.test(html)) return html;
+  if (/<base\s/i.test(html)) return html.replace(/<base\b[^>]*>/i, baseTag);
   if (/<head[^>]*>/i.test(html)) {
     return html.replace(/<head([^>]*)>/i, `<head$1>${baseTag}`);
   }
@@ -99,9 +161,11 @@ function withBaseHref(html: string, baseDir?: string): string {
 
 async function readHtmlFile(filePath: string) {
   const html = await readFile(filePath, 'utf8');
+  const baseDir = dirname(filePath);
   return {
     filePath,
-    baseDir: dirname(filePath),
+    baseDir,
+    assetBaseUrl: registerLocalAssetRoot(baseDir),
     html,
     name: basename(filePath)
   };
@@ -179,7 +243,7 @@ function withPreviewShell(html: string): string {
 .html-demo-preview-toolbar,
 .html-demo-preview-toolbar * {
   box-sizing: border-box;
-  font-family: "Segoe UI", Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Arial, sans-serif;
 }
 .html-demo-preview-toolbar {
   position: fixed;
@@ -217,8 +281,8 @@ function withPreviewShell(html: string): string {
   cursor: pointer;
 }
 .html-demo-preview-toolbar button:hover {
-  border-color: #0f766e;
-  color: #0f766e;
+  border-color: #007aff;
+  color: #007aff;
 }
 .html-demo-preview-toolbar select {
   padding: 0 8px;
@@ -280,6 +344,7 @@ html.html-demo-preview-pointer-laser .html-demo-preview-laser {
   if (!body) return;
 
   let zoom = 1;
+  let scaleMode = 'width';
   let pointerMode = 'auto';
   let idleTimer = 0;
   let drawing = false;
@@ -323,7 +388,7 @@ html.html-demo-preview-pointer-laser .html-demo-preview-laser {
     }
   }
 
-  function setZoom(nextZoom) {
+  function applyZoom(nextZoom) {
     zoom = Math.max(0.25, Math.min(3, Number(nextZoom) || 1));
     body.style.zoom = String(zoom);
     toolbar.style.zoom = String(1 / zoom);
@@ -332,27 +397,34 @@ html.html-demo-preview-pointer-laser .html-demo-preview-laser {
     if (scaleLabel) scaleLabel.textContent = Math.round(zoom * 100) + '%';
   }
 
+  function setZoom(nextZoom) {
+    scaleMode = 'manual';
+    applyZoom(nextZoom);
+  }
+
   function measureAtActualZoom(callback) {
     const previousZoom = zoom;
-    setZoom(1);
+    applyZoom(1);
     requestAnimationFrame(() => {
       callback();
-      if (Math.abs(zoom - 1) < 0.001 && previousZoom !== 1) setZoom(previousZoom);
+      if (Math.abs(zoom - 1) < 0.001 && previousZoom !== 1) applyZoom(previousZoom);
     });
   }
 
   function fitWidth() {
+    scaleMode = 'width';
     measureAtActualZoom(() => {
       const width = Math.max(document.body.scrollWidth, document.documentElement.scrollWidth, 1);
-      setZoom(window.innerWidth / width);
+      applyZoom(window.innerWidth / width);
     });
   }
 
   function fitScreen() {
+    scaleMode = 'screen';
     measureAtActualZoom(() => {
       const width = Math.max(document.body.scrollWidth, document.documentElement.scrollWidth, 1);
       const height = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight, 1);
-      setZoom(Math.min(window.innerWidth / width, window.innerHeight / height));
+      applyZoom(Math.min(window.innerWidth / width, window.innerHeight / height));
     });
   }
 
@@ -385,7 +457,10 @@ html.html-demo-preview-pointer-laser .html-demo-preview-laser {
     if (action === 'zoom-in') setZoom(zoom + 0.1);
     if (action === 'fit-width') fitWidth();
     if (action === 'fit-screen') fitScreen();
-    if (action === 'actual') setZoom(1);
+    if (action === 'actual') {
+      scaleMode = 'actual';
+      applyZoom(1);
+    }
     if (action === 'clear-ink') {
       context?.clearRect(0, 0, ink.width, ink.height);
     }
@@ -396,7 +471,11 @@ html.html-demo-preview-pointer-laser .html-demo-preview-laser {
   });
 
   pointerSelect?.addEventListener('change', (event) => setPointerMode(event.target.value));
-  window.addEventListener('resize', resizeInk);
+  window.addEventListener('resize', () => {
+    resizeInk();
+    if (scaleMode === 'width') fitWidth();
+    if (scaleMode === 'screen') fitScreen();
+  });
   window.addEventListener('pointermove', (event) => {
     markPointerActive();
     laser.style.transform = 'translate(' + event.clientX + 'px,' + event.clientY + 'px)';
@@ -429,6 +508,7 @@ html.html-demo-preview-pointer-laser .html-demo-preview-laser {
   resizeInk();
   setPointerMode('auto');
   markPointerActive();
+  requestAnimationFrame(fitWidth);
 })();
 </script>`;
 
@@ -544,7 +624,7 @@ ipcMain.handle('project:save', async (_event, payload: SavePayload) => {
   await writeFile(filePath, payload.html, 'utf8');
   await copyReferencedAssets(payload.sourceBaseDir, dirname(filePath), payload.assetPaths);
   await addRecentFile(filePath);
-  return { filePath };
+  return { filePath, assetBaseUrl: registerLocalAssetRoot(dirname(filePath)) };
 });
 
 ipcMain.handle('project:save-as', async (_event, payload: SavePayload) => {
@@ -554,7 +634,7 @@ ipcMain.handle('project:save-as', async (_event, payload: SavePayload) => {
   await writeFile(filePath, payload.html, 'utf8');
   await copyReferencedAssets(payload.sourceBaseDir, dirname(filePath), payload.assetPaths);
   await addRecentFile(filePath);
-  return { filePath };
+  return { filePath, assetBaseUrl: registerLocalAssetRoot(dirname(filePath)) };
 });
 
 ipcMain.handle('project:auto-save', async (_event, payload: AutoSavePayload) => {
@@ -571,7 +651,8 @@ ipcMain.handle('project:auto-save', async (_event, payload: AutoSavePayload) => 
 ipcMain.handle('project:load-autosave', async () => {
   try {
     const raw = await readFile(getAutoSavePath(), 'utf8');
-    return JSON.parse(raw) as AutoSaveRecord;
+    const record = JSON.parse(raw) as AutoSaveRecord;
+    return { ...record, assetBaseUrl: registerLocalAssetRoot(record.baseDir) };
   } catch {
     return null;
   }
@@ -667,7 +748,7 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
-  pendingOpenPath = findLaunchOpenPath(process.argv);
+  pendingOpenPath = process.env.HTML_DEMO_EDITOR_OPEN_PATH || findLaunchOpenPath(process.argv);
   app.on('second-instance', (_event, argv) => {
     const filePath = findLaunchOpenPath(argv);
     if (!filePath) return;
@@ -692,6 +773,7 @@ app.on('open-file', (event, filePath) => {
 
 app.whenReady().then(() => {
   if (!hasSingleInstanceLock) return;
+  registerLocalAssetProtocol();
   createWindow();
 
   app.on('activate', () => {

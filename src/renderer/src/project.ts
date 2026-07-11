@@ -14,6 +14,7 @@ export interface ProjectMeta {
   title: string;
   filePath?: string;
   baseDir?: string;
+  assetBaseUrl?: string;
   sourceName?: string;
   headExtras: string;
   bodyScripts: string;
@@ -251,8 +252,8 @@ const DEFAULT_SLIDE_CSS = `
   top: 68px;
   padding: 8px 12px;
   border-radius: 6px;
-  background: #e8f4f2;
-  color: #187365;
+  background: #eaf3ff;
+  color: #0068d9;
   font-size: 18px;
   font-weight: 700;
   letter-spacing: 0;
@@ -320,7 +321,7 @@ const DEFAULT_SLIDE_CSS = `
 }
 .metric-card b {
   display: block;
-  color: #0f766e;
+  color: #007aff;
   font-size: 56px;
   line-height: 1;
 }
@@ -351,7 +352,7 @@ const DEFAULT_SLIDE_CSS = `
 }
 .text-block {
   padding: 28px;
-  border-left: 6px solid #d9852b;
+  border-left: 6px solid #ff9f0a;
   background: #fbf7f0;
   color: #384250;
   font-size: 24px;
@@ -713,7 +714,13 @@ export function createDefaultProject(): ParsedProject {
   };
 }
 
-export function parseHtmlProject(rawHtml: string, sourceName?: string, filePath?: string, baseDir?: string): ParsedProject {
+export function parseHtmlProject(
+  rawHtml: string,
+  sourceName?: string,
+  filePath?: string,
+  baseDir?: string,
+  assetBaseUrl?: string
+): ParsedProject {
   const doc = new DOMParser().parseFromString(rawHtml, 'text/html');
   removeRuntimeNodes(doc);
 
@@ -731,6 +738,7 @@ export function parseHtmlProject(rawHtml: string, sourceName?: string, filePath?
       title,
       filePath,
       baseDir,
+      assetBaseUrl,
       sourceName,
       headExtras: collectHeadExtras(doc),
       bodyScripts: collectScripts(doc),
@@ -1152,7 +1160,7 @@ export function buildSlidePreviewDoc(slide: SlideModel, meta?: ProjectMeta): str
   const height = getSlideCanvasHeight(normalized);
   const bodyAttrs = serializeAttributes(meta?.bodyAttributes);
   const htmlAttrs = serializeHtmlAttributes(meta?.htmlAttributes);
-  const baseHref = baseDirToFileHref(meta?.baseDir);
+  const baseHref = meta?.assetBaseUrl || baseDirToFileHref(meta?.baseDir);
   const documentMode = meta?.documentMode === true;
   const markup = documentMode ? normalized.components : ensureDeckSlideMarkup(normalized.components, normalized, 0);
   const helperCss = documentMode

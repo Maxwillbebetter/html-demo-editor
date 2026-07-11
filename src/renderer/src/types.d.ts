@@ -4,12 +4,14 @@ declare module 'grapesjs-preset-webpage';
 export interface OpenProjectResult {
   filePath: string;
   baseDir: string;
+  assetBaseUrl?: string;
   html: string;
   name: string;
 }
 
 export interface SaveResult {
   filePath: string;
+  assetBaseUrl?: string;
 }
 
 export interface ImageAssetResult {
@@ -37,6 +39,7 @@ export interface AutoSaveRecord {
   title?: string;
   filePath?: string;
   baseDir?: string;
+  assetBaseUrl?: string;
   sourceName?: string;
   savedAt: string;
 }

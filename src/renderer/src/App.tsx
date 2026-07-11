@@ -17,24 +17,28 @@ import {
   Download,
   Eye,
   EyeOff,
+  FileCode2,
   FileClock,
   FilePlus2,
   FolderOpen,
+  FolderTree,
   Group,
+  Hand,
   Image,
   Italic,
   Layers2,
   Maximize2,
-  MonitorPlay,
+  MousePointer2,
   PaintBucket,
   PanelLeft,
   PanelRight,
   Palette,
   Play,
   Plus,
+  Presentation,
   Redo2,
   Save,
-  Scissors,
+  SaveAll,
   SendToBack,
   Trash2,
   Type,
@@ -64,7 +68,7 @@ import {
   type ProjectMeta,
   type SlideModel
 } from './project';
-import type { AutoSaveRecord } from './types';
+import type { AutoSaveRecord, OpenProjectResult } from './types';
 
 const CURRENT_DEVICE_ID = 'current-page';
 const ELEMENT_RESIZER_OPTIONS: ResizerOptions = {
@@ -83,8 +87,8 @@ const ELEMENT_RESIZER_OPTIONS: ResizerOptions = {
   keepAutoHeight: true,
   keepAutoWidth: true
 };
-const TEXT_COLOR_SWATCHES = ['#111827', '#374151', '#ffffff', '#0f766e', '#2563eb', '#7c3aed', '#d9852b', '#dc2626'];
-const FILL_COLOR_SWATCHES = ['#ffffff', '#f8fafc', '#eef7f6', '#fff7ed', '#eff6ff', '#f5f3ff', '#111827', '#0f766e'];
+const TEXT_COLOR_SWATCHES = ['#1d1d1f', '#515154', '#ffffff', '#007aff', '#34c759', '#5e5ce6', '#ff9f0a', '#ff3b30'];
+const FILL_COLOR_SWATCHES = ['#ffffff', '#f5f5f7', '#eaf3ff', '#fff4e5', '#edf7ee', '#f2eeff', '#1d1d1f', '#007aff'];
 const FONT_OPTIONS = [
   { label: 'Segoe UI', value: '"Segoe UI", Arial, sans-serif' },
   { label: 'Arial', value: 'Arial, sans-serif' },
@@ -98,6 +102,7 @@ const RECENT_FILE_LIMIT = 8;
 type LeftTab = 'slides' | 'blocks';
 type RightTab = 'style' | 'layers' | 'page';
 type CanvasFitMode = 'fit' | 'width';
+type CanvasInteractionMode = 'edit' | 'interact';
 type AlignAction = 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom';
 type DistributeAction = 'horizontal' | 'vertical';
 type GuideMatch = { diff: number; target: keyof BoxMetrics; value: number };
@@ -195,6 +200,19 @@ function presentationModeLabel(mode: PresentationMode): string {
 
 function projectModeLabel(documentMode?: boolean): string {
   return documentMode ? '大 HTML 文档' : '分页演示';
+}
+
+function applyEditorCanvasZoom(editor: Editor | null, value: number): number {
+  const next = Math.max(10, Math.min(220, Math.round(value)));
+  if (!editor) return next;
+
+  const canvas = editor.Canvas;
+  const current = canvas.getZoom();
+  if (Number.isFinite(current) && Math.abs(current - next) < 0.001) {
+    canvas.setZoom(next + 0.01);
+  }
+  canvas.setZoom(next);
+  return next;
 }
 
 function makeSlideId(): string {
@@ -470,8 +488,8 @@ function drawSmartGuides(editor: Editor, guides: Array<{ axis: 'x' | 'y'; value:
       position: 'absolute',
       pointerEvents: 'none',
       zIndex: '2147483646',
-      background: '#0f766e',
-      boxShadow: '0 0 0 1px rgba(15,118,110,0.16)'
+      background: '#007aff',
+      boxShadow: '0 0 0 1px rgba(0,122,255,0.16)'
     });
     if (guide.axis === 'x') {
       line.style.left = `${Math.round(rootRect.left + guide.value)}px`;
@@ -779,16 +797,23 @@ function ToolbarButton({
   title,
   onClick,
   children,
-  active = false
+  active = false,
+  variant = 'default'
 }: {
   label: string;
   title?: string;
   onClick: () => void;
   children: React.ReactNode;
   active?: boolean;
+  variant?: 'default' | 'primary';
 }) {
   return (
-    <button className={`toolbar-button${active ? ' is-active' : ''}`} type="button" title={title || label} onClick={onClick}>
+    <button
+      className={`toolbar-button toolbar-button--${variant}${active ? ' is-active' : ''}`}
+      type="button"
+      title={title || label}
+      onClick={onClick}
+    >
       {children}
       <span>{label}</span>
     </button>
@@ -797,6 +822,7 @@ function ToolbarButton({
 
 export default function App() {
   const initialProject = useMemo(() => createDefaultProject(), []);
+  const initialProjectHtml = useMemo(() => buildExportHtml(initialProject.slides, initialProject.meta), [initialProject]);
   const [meta, setMeta] = useState<ProjectMeta>(initialProject.meta);
   const [slides, setSlides] = useState<SlideModel[]>(initialProject.slides);
   const [currentSlideId, setCurrentSlideId] = useState(initialProject.slides[0].id);
@@ -811,6 +837,7 @@ export default function App() {
   const [gridEnabled, setGridEnabled] = useState(false);
   const [draggedSlideId, setDraggedSlideId] = useState<string | null>(null);
   const [canvasFitMode, setCanvasFitMode] = useState<CanvasFitMode>('width');
+  const [canvasInteractionMode, setCanvasInteractionMode] = useState<CanvasInteractionMode>('edit');
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
@@ -824,7 +851,10 @@ export default function App() {
   const editorRef = useRef<Editor | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const autoSaveTimerRef = useRef<number | null>(null);
+  const dirtySyncTimerRef = useRef<number | null>(null);
   const autoSaveCheckedRef = useRef(false);
+  const baselineOnLoadRef = useRef(true);
+  const measuredDocumentWidthSlideRef = useRef<string | null>(null);
   const loadingSlideRef = useRef(false);
   const slidesRef = useRef(slides);
   const metaRef = useRef(meta);
@@ -832,9 +862,11 @@ export default function App() {
   const gridEnabledRef = useRef(gridEnabled);
   const zoomRef = useRef(zoom);
   const canvasFitModeRef = useRef(canvasFitMode);
+  const canvasInteractionModeRef = useRef<CanvasInteractionMode>('edit');
   const selectionItemsRef = useRef<ComponentSelectionItem[]>([]);
   const lastSelectionItemsRef = useRef<ComponentSelectionItem[]>([]);
   const lastSelectedComponentsRef = useRef<Component[]>([]);
+  const persistedHtmlRef = useRef(initialProjectHtml);
 
   useEffect(() => {
     slidesRef.current = slides;
@@ -862,7 +894,7 @@ export default function App() {
 
   useEffect(() => {
     zoomRef.current = zoom;
-    editorRef.current?.Canvas.setZoom(zoom);
+    applyEditorCanvasZoom(editorRef.current, zoom);
   }, [zoom]);
 
   const notify = useCallback((message: string) => {
@@ -990,6 +1022,7 @@ export default function App() {
       window.removeEventListener('keydown', dismissTransientUi);
       window.removeEventListener('resize', dismissTransientUi);
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+      if (dirtySyncTimerRef.current) window.clearTimeout(dirtySyncTimerRef.current);
     };
   }, []);
 
@@ -1002,8 +1035,9 @@ export default function App() {
     doc.querySelectorAll('[data-html-demo-editor-managed="head"]').forEach((node) => node.remove());
     doc.documentElement.classList.toggle('html-demo-editor-grid', gridEnabledRef.current && !isDocumentMode);
     doc.documentElement.classList.toggle('html-demo-editor-document-mode', isDocumentMode);
+    doc.documentElement.classList.toggle('html-demo-editor-interact-mode', canvasInteractionModeRef.current === 'interact');
 
-    const baseHref = baseDirToFileHref(metaRef.current.baseDir);
+    const baseHref = metaRef.current.assetBaseUrl || baseDirToFileHref(metaRef.current.baseDir);
     if (baseHref) {
       const base = doc.createElement('base');
       base.href = baseHref;
@@ -1051,7 +1085,7 @@ export default function App() {
     helperStyle.textContent = isDocumentMode
       ? `
       [data-html-demo-multi-selected="true"] {
-        outline: 2px solid rgba(15, 118, 110, 0.72) !important;
+        outline: 2px solid rgba(0, 122, 255, 0.72) !important;
         outline-offset: 2px;
       }
       [data-html-demo-group="true"] {
@@ -1064,14 +1098,17 @@ export default function App() {
         pointer-events: none;
         z-index: 2147483647;
         background-image:
-          linear-gradient(rgba(15, 118, 110, 0.13) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(15, 118, 110, 0.13) 1px, transparent 1px);
+          linear-gradient(rgba(0, 122, 255, 0.13) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(0, 122, 255, 0.13) 1px, transparent 1px);
         background-size: 24px 24px;
+      }
+      html.html-demo-editor-interact-mode [data-html-demo-multi-selected="true"] {
+        outline: none !important;
       }
     `
       : `
       [data-html-demo-multi-selected="true"] {
-        outline: 2px solid rgba(15, 118, 110, 0.72) !important;
+        outline: 2px solid rgba(0, 122, 255, 0.72) !important;
         outline-offset: 2px;
       }
       [data-html-demo-group="true"] {
@@ -1113,9 +1150,12 @@ export default function App() {
         pointer-events: none;
         z-index: 2147483647;
         background-image:
-          linear-gradient(rgba(15, 118, 110, 0.13) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(15, 118, 110, 0.13) 1px, transparent 1px);
+          linear-gradient(rgba(0, 122, 255, 0.13) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(0, 122, 255, 0.13) 1px, transparent 1px);
         background-size: 24px 24px;
+      }
+      html.html-demo-editor-interact-mode [data-html-demo-multi-selected="true"] {
+        outline: none !important;
       }
     `;
 
@@ -1171,15 +1211,77 @@ export default function App() {
         });
       }
     }
+
+    if (isDocumentMode) {
+      const syncDocumentSize = () => {
+        if (!metaRef.current.documentMode) return;
+        const activeSlide = slidesRef.current.find((slide) => slide.id === currentSlideIdRef.current) ?? slidesRef.current[0];
+        if (!activeSlide) return;
+        const root = doc.querySelector('[data-htmlppt-document-root]') as HTMLElement | null;
+        const shouldMeasureWidth = measuredDocumentWidthSlideRef.current !== activeSlide.id;
+        const measuredWidth = Math.ceil(
+          Math.max(
+            getSlideCanvasWidth(activeSlide),
+            doc.documentElement.scrollWidth,
+            doc.body.scrollWidth,
+            root?.scrollWidth || 0,
+            root?.getBoundingClientRect().width || 0
+          )
+        );
+        const measuredHeight = Math.ceil(
+          Math.max(
+            getSlideCanvasHeight(activeSlide),
+            doc.documentElement.scrollHeight,
+            doc.body.scrollHeight,
+            root?.scrollHeight || 0,
+            root?.getBoundingClientRect().height || 0
+          )
+        );
+        const device = editorRef.current?.Devices.get(CURRENT_DEVICE_ID);
+        const currentWidth = Number.parseFloat(String(device?.get('width') || '0'));
+        const currentHeight = Number.parseFloat(String(device?.get('height') || '0'));
+        const targetWidth = shouldMeasureWidth ? measuredWidth : getSlideCanvasWidth(activeSlide);
+        if (device && (Math.abs(currentWidth - targetWidth) > 1 || Math.abs(currentHeight - measuredHeight) > 1)) {
+          device.set({
+            width: `${targetWidth}px`,
+            widthMedia: `${targetWidth}px`,
+            height: `${measuredHeight}px`
+          });
+        }
+        if (shouldMeasureWidth) measuredDocumentWidthSlideRef.current = activeSlide.id;
+        if (targetWidth > getSlideCanvasWidth(activeSlide) + 1 || measuredHeight > getSlideCanvasHeight(activeSlide) + 1) {
+          const nextSlides = slidesRef.current.map((slide) =>
+            slide.id === activeSlide.id
+              ? {
+                  ...slide,
+                  canvasWidth: Math.max(getSlideCanvasWidth(slide), targetWidth),
+                  canvasHeight: Math.max(getSlideCanvasHeight(slide), measuredHeight)
+                }
+              : slide
+          );
+          slidesRef.current = nextSlides;
+          setSlides(nextSlides);
+        }
+        const shellBounds = editorShellRef.current?.getBoundingClientRect();
+        if (shellBounds) {
+          const fit = Math.floor((Math.max(320, shellBounds.width - 4) / targetWidth) * 100);
+          const nextZoom = applyEditorCanvasZoom(editorRef.current, fit);
+          zoomRef.current = nextZoom;
+          setZoom(nextZoom);
+        }
+      };
+
+      window.setTimeout(syncDocumentSize, 0);
+      window.setTimeout(syncDocumentSize, 300);
+      window.setTimeout(syncDocumentSize, 1000);
+    }
   }, []);
 
   const updateCanvasDevice = useCallback((slide: SlideModel) => {
     const editor = editorRef.current;
     if (!editor) return;
     const normalized = normalizeSlide(slide);
-    const shellBounds = editorShellRef.current?.getBoundingClientRect();
-    const documentViewportWidth = shellBounds ? Math.max(640, Math.floor(shellBounds.width - 34)) : getSlideCanvasWidth(normalized);
-    const width = `${metaRef.current.documentMode ? documentViewportWidth : getSlideCanvasWidth(normalized)}px`;
+    const width = `${getSlideCanvasWidth(normalized)}px`;
     const height = `${getSlideCanvasHeight(normalized)}px`;
     const deviceManager = editor.Devices;
     let device = deviceManager.get(CURRENT_DEVICE_ID);
@@ -1208,11 +1310,13 @@ export default function App() {
 
       const normalized = normalizeSlide(slide);
       loadingSlideRef.current = true;
+      measuredDocumentWidthSlideRef.current = null;
       updateCanvasDevice(normalized);
       editor.setComponents(normalized.components);
       editor.setStyle(normalized.css);
       enableComponentResize(editor.getWrapper());
-      editor.Canvas.setZoom(zoomRef.current);
+      applyEditorCanvasZoom(editor, zoomRef.current);
+      window.requestAnimationFrame(() => applyEditorCanvasZoom(editor, zoomRef.current));
       (editor as unknown as { setDragMode?: (mode: string) => void }).setDragMode?.('absolute');
       setSelectedSummary(null);
       setSelectionItems([]);
@@ -1225,15 +1329,36 @@ export default function App() {
         syncSelectionState();
         refreshLayerItems();
         loadingSlideRef.current = false;
+        if (baselineOnLoadRef.current) {
+          const finalizeBaseline = () => {
+            if (!baselineOnLoadRef.current) return;
+            const baselineSlides = slidesRef.current.map((item) =>
+              item.id === normalized.id
+                ? {
+                    ...item,
+                    components: editor.getHtml(),
+                    css: editor.getCss() ?? ''
+                  }
+                : item
+            );
+            slidesRef.current = baselineSlides;
+            setSlides(baselineSlides);
+            persistedHtmlRef.current = buildExportHtml(baselineSlides, metaRef.current);
+            baselineOnLoadRef.current = false;
+            setDirty(false);
+          };
+          if (metaRef.current.documentMode) window.setTimeout(finalizeBaseline, 1100);
+          else finalizeBaseline();
+        }
       }, 0);
     },
     [refreshLayerItems, syncCanvasHelpers, syncSelectionState, updateCanvasDevice]
   );
 
-  const commitCurrentSlide = useCallback(() => {
+  const commitCurrentSlide = useCallback((force = false) => {
     const editor = editorRef.current;
     const currentId = currentSlideIdRef.current;
-    if (!editor || !currentId || loadingSlideRef.current) return slidesRef.current;
+    if (!editor || !currentId || (loadingSlideRef.current && !force)) return slidesRef.current;
 
     flushEditorState(editor);
 
@@ -1254,6 +1379,10 @@ export default function App() {
 
   const replaceProject = useCallback(
     (nextMeta: ProjectMeta, nextSlides: SlideModel[]) => {
+      if (dirtySyncTimerRef.current) {
+        window.clearTimeout(dirtySyncTimerRef.current);
+        dirtySyncTimerRef.current = null;
+      }
       const normalizedSlides = (nextSlides.length ? nextSlides : [createBlankSlide('页面 1')]).map(normalizeSlide);
       const firstSlide = normalizedSlides[0];
       setMeta(nextMeta);
@@ -1263,12 +1392,16 @@ export default function App() {
       slidesRef.current = normalizedSlides;
       metaRef.current = nextMeta;
       currentSlideIdRef.current = firstSlide.id;
+      persistedHtmlRef.current = buildExportHtml(normalizedSlides, nextMeta);
+      baselineOnLoadRef.current = true;
       if (nextMeta.documentMode) {
         setGridEnabled(false);
         gridEnabledRef.current = false;
         setCanvasFitMode('width');
         canvasFitModeRef.current = 'width';
       }
+      setCanvasInteractionMode('edit');
+      canvasInteractionModeRef.current = 'edit';
       loadSlideIntoEditor(firstSlide);
     },
     [loadSlideIntoEditor]
@@ -1290,9 +1423,11 @@ export default function App() {
       record.html,
       record.sourceName || record.title || '自动恢复.html',
       record.filePath,
-      record.baseDir
+      record.baseDir,
+      record.assetBaseUrl
     );
     replaceProject(parsed.meta, parsed.slides);
+    baselineOnLoadRef.current = false;
     setDirty(true);
     notify('已恢复自动保存草稿');
   }, [notify, replaceProject]);
@@ -1351,6 +1486,7 @@ export default function App() {
         frameDoc.addEventListener(
           'mousedown',
           (event) => {
+            if (canvasInteractionModeRef.current === 'interact') return;
             if (event.button !== 0 || isEditableShortcutTarget(event.target)) return;
             const component = getGrapesComponentFromElement(editor, event.target);
             if ((event.shiftKey || event.metaKey || event.ctrlKey) && component && !isRootLikeComponent(component)) {
@@ -1384,8 +1520,8 @@ export default function App() {
                   position: 'fixed',
                   pointerEvents: 'none',
                   zIndex: '2147483647',
-                  border: '1px solid #0f766e',
-                  background: 'rgba(15, 118, 110, 0.1)'
+                  border: '1px solid #007aff',
+                  background: 'rgba(0, 122, 255, 0.1)'
                 });
                 frameDoc.body.appendChild(marquee);
               }
@@ -1437,6 +1573,7 @@ export default function App() {
         frameDoc.addEventListener(
           'click',
           (event) => {
+            if (canvasInteractionModeRef.current === 'interact') return;
             const component = getGrapesComponentFromElement(editor, event.target);
             if (!component) return;
 
@@ -1455,6 +1592,7 @@ export default function App() {
           true
         );
         const handleFrameContextMenu = (event: MouseEvent) => {
+            if (canvasInteractionModeRef.current === 'interact') return;
             const markedEvent = event as MouseEvent & { __htmlDemoContextHandled?: boolean };
             if (markedEvent.__htmlDemoContextHandled) return;
             markedEvent.__htmlDemoContextHandled = true;
@@ -1495,6 +1633,7 @@ export default function App() {
         frameDoc.addEventListener(
           'keydown',
           (event) => {
+            if (canvasInteractionModeRef.current === 'interact') return;
             if (isEditableShortcutTarget(event.target)) return;
             const directionMap: Record<string, [number, number]> = {
               ArrowLeft: [-1, 0],
@@ -1527,7 +1666,27 @@ export default function App() {
     });
 
     editor.on('update', () => {
-      if (!loadingSlideRef.current) setDirty(true);
+      if (loadingSlideRef.current || baselineOnLoadRef.current) return;
+      if (dirtySyncTimerRef.current) window.clearTimeout(dirtySyncTimerRef.current);
+      dirtySyncTimerRef.current = window.setTimeout(() => {
+        if (loadingSlideRef.current || baselineOnLoadRef.current) {
+          dirtySyncTimerRef.current = null;
+          return;
+        }
+        const currentId = currentSlideIdRef.current;
+        const currentSlides = slidesRef.current.map((slide) =>
+          slide.id === currentId
+            ? {
+                ...slide,
+                components: editor.getHtml(),
+                css: editor.getCss() ?? ''
+              }
+            : slide
+        );
+        const currentHtml = buildExportHtml(currentSlides, metaRef.current);
+        setDirty(currentHtml !== persistedHtmlRef.current);
+        dirtySyncTimerRef.current = null;
+      }, 0);
     });
     editor.on('component:add', (component) => {
       enableComponentResize(component);
@@ -1584,7 +1743,7 @@ export default function App() {
 
   useEffect(() => {
     syncCanvasHelpers();
-  }, [gridEnabled, syncCanvasHelpers]);
+  }, [gridEnabled, meta.assetBaseUrl, syncCanvasHelpers]);
 
   const confirmDiscard = useCallback(() => {
     if (!dirty) return true;
@@ -1592,7 +1751,7 @@ export default function App() {
   }, [dirty]);
 
   const materializeHtml = useCallback(() => {
-    const nextSlides = commitCurrentSlide();
+    const nextSlides = commitCurrentSlide(true);
     return {
       slides: nextSlides,
       html: buildExportHtml(nextSlides, metaRef.current)
@@ -1631,8 +1790,8 @@ export default function App() {
   }, [confirmDiscard, replaceProject]);
 
   const openImportedProject = useCallback(
-    (result: { html: string; name: string; filePath: string; baseDir: string }) => {
-      const parsed = parseHtmlProject(result.html, result.name, result.filePath, result.baseDir);
+    (result: OpenProjectResult) => {
+      const parsed = parseHtmlProject(result.html, result.name, result.filePath, result.baseDir, result.assetBaseUrl);
       replaceProject(parsed.meta, parsed.slides);
       notify(`已打开 ${result.name}`);
       void refreshRecentFiles();
@@ -1742,16 +1901,20 @@ export default function App() {
       });
       if (!result) return;
 
-      setMeta((current) => ({
-        ...current,
+      const nextMeta = {
+        ...metaRef.current,
         filePath: result.filePath,
         baseDir: dirnameFromPath(result.filePath),
+        assetBaseUrl: result.assetBaseUrl,
         sourceName: result.filePath.split(/[\\/]/).pop()
-      }));
-      setDirty(false);
+      };
+      metaRef.current = nextMeta;
+      setMeta(nextMeta);
+      persistedHtmlRef.current = html;
       setLastAutoSavedAt(null);
       await window.desktopBridge.clearAutoSave();
       await refreshRecentFiles();
+      setDirty(false);
       notify(`已保存到 ${result.filePath.split(/[\\/]/).pop()}`);
     } catch (error) {
       console.error(error);
@@ -1770,16 +1933,20 @@ export default function App() {
       });
       if (!result) return;
 
-      setMeta((current) => ({
-        ...current,
+      const nextMeta = {
+        ...metaRef.current,
         filePath: result.filePath,
         baseDir: dirnameFromPath(result.filePath),
+        assetBaseUrl: result.assetBaseUrl,
         sourceName: result.filePath.split(/[\\/]/).pop()
-      }));
-      setDirty(false);
+      };
+      metaRef.current = nextMeta;
+      setMeta(nextMeta);
+      persistedHtmlRef.current = html;
       setLastAutoSavedAt(null);
       await window.desktopBridge.clearAutoSave();
       await refreshRecentFiles();
+      setDirty(false);
       notify(`已另存为 ${result.filePath.split(/[\\/]/).pop()}`);
     } catch (error) {
       console.error(error);
@@ -1846,21 +2013,18 @@ export default function App() {
     if (!shell) return;
     const current = slidesRef.current.find((slide) => slide.id === currentSlideIdRef.current) ?? slidesRef.current[0];
     const normalized = current ? normalizeSlide(current) : createBlankSlide();
-    if (metaRef.current.documentMode) {
-      updateCanvasDevice(normalized);
-      setZoom(100);
-      return;
-    }
     const bounds = shell.getBoundingClientRect();
     const width = getSlideCanvasWidth(normalized);
     const height = getSlideCanvasHeight(normalized);
     const availableWidth = Math.max(320, bounds.width - 4);
     const availableHeight = Math.max(240, bounds.height - 4);
     const fit =
-      normalized.presentationMode === 'scroll' || canvasFitModeRef.current === 'width'
+      metaRef.current.documentMode || normalized.presentationMode === 'scroll' || canvasFitModeRef.current === 'width'
         ? Math.floor((availableWidth / width) * 100)
         : Math.floor(Math.min(availableWidth / width, availableHeight / height) * 100);
-    setZoom(Math.max(10, Math.min(220, fit)));
+    const nextZoom = applyEditorCanvasZoom(editorRef.current, fit);
+    zoomRef.current = nextZoom;
+    setZoom(nextZoom);
   }, [updateCanvasDevice]);
 
   useEffect(() => {
@@ -1873,6 +2037,28 @@ export default function App() {
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, [handleFitCanvas]);
+
+  useEffect(() => {
+    const shell = editorShellRef.current;
+    if (!shell || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => handleFitCanvas());
+    observer.observe(shell);
+    return () => observer.disconnect();
+  }, [handleFitCanvas]);
+
+  const handleCanvasInteractionToggle = useCallback(() => {
+    const next: CanvasInteractionMode = canvasInteractionModeRef.current === 'edit' ? 'interact' : 'edit';
+    canvasInteractionModeRef.current = next;
+    setCanvasInteractionMode(next);
+    setContextMenu(null);
+    if (next === 'interact') {
+      editorRef.current?.select();
+      setSelectionItems([]);
+      selectionItemsRef.current = [];
+      setSelectedSummary(null);
+    }
+    window.setTimeout(syncCanvasHelpers, 0);
+  }, [syncCanvasHelpers]);
 
   const handleSelectSlide = useCallback(
     (slideId: string) => {
@@ -2409,13 +2595,11 @@ export default function App() {
     loadingSlideRef.current = true;
     editor.setComponents(codeHtml);
     editor.setStyle(codeCss);
-    window.setTimeout(() => {
-      loadingSlideRef.current = false;
-      syncCanvasHelpers();
-      commitCurrentSlide();
-      setDirty(true);
-      setCodeOpen(false);
-    }, 0);
+    loadingSlideRef.current = false;
+    commitCurrentSlide(true);
+    setDirty(true);
+    setCodeOpen(false);
+    window.setTimeout(syncCanvasHelpers, 0);
   }, [codeCss, codeHtml, commitCurrentSlide, syncCanvasHelpers]);
 
   const currentSlideIndex = slides.findIndex((slide) => slide.id === currentSlideId);
@@ -2437,6 +2621,9 @@ export default function App() {
   const contextBoldActive = isBoldValue(activeContextSummary?.fontWeight);
   const contextItalicActive = activeContextSummary?.fontStyle === 'italic';
   const contextUnderlineActive = (activeContextSummary?.textDecoration || '').includes('underline');
+  const saveStatusLabel = dirty ? '有未保存修改' : meta.filePath ? '已保存' : '尚未保存';
+  const renderedCanvasWidth = selectedSlide ? getSlideCanvasWidth(selectedSlide) * (zoom / 100) : 0;
+  const renderedCanvasHeight = selectedSlide ? getSlideCanvasHeight(selectedSlide) * (zoom / 100) : 0;
 
   const applyCurrentSlideCanvasPatch = useCallback(
     (patch: Partial<Pick<SlideModel, 'canvasWidth' | 'canvasHeight' | 'presentationMode'>>, reload = false) => {
@@ -2640,49 +2827,63 @@ export default function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-mark">H</div>
-          <div>
+          <div className="brand-mark" aria-hidden="true">
+            <FileCode2 size={18} strokeWidth={1.8} />
+          </div>
+          <div className="brand-copy">
             <strong>HTML Demo Editor</strong>
-            <span>{meta.sourceName || '本地演示材料'}</span>
+            <div className="brand-subtitle">
+              <span
+                className={`document-state-dot${dirty ? ' is-dirty' : meta.filePath ? ' is-saved' : ' is-unsaved'}`}
+                aria-hidden="true"
+              />
+              <span title={meta.filePath || meta.sourceName || '本地演示材料'}>{meta.sourceName || '本地演示材料'}</span>
+            </div>
           </div>
         </div>
 
         <nav className="toolbar" aria-label="主工具栏">
-          <ToolbarButton label="新建" onClick={handleNewProject}>
-            <FilePlus2 size={16} />
-          </ToolbarButton>
-          <ToolbarButton label="打开" onClick={handleOpenFile}>
-            <FolderOpen size={16} />
-          </ToolbarButton>
-          <ToolbarButton label="文件夹" onClick={handleOpenFolder}>
-            <PanelLeft size={16} />
-          </ToolbarButton>
-          <ToolbarButton label="保存" onClick={handleSave}>
-            <Save size={16} />
-          </ToolbarButton>
-          <ToolbarButton label="另存" onClick={handleSaveAs}>
-            <Scissors size={16} />
-          </ToolbarButton>
-          <span className="toolbar-divider" />
-          <ToolbarButton label="撤销" onClick={handleUndo}>
-            <Undo2 size={16} />
-          </ToolbarButton>
-          <ToolbarButton label="重做" onClick={handleRedo}>
-            <Redo2 size={16} />
-          </ToolbarButton>
-          <ToolbarButton label="代码" onClick={openCodeView} active={codeOpen}>
-            <Code2 size={16} />
-          </ToolbarButton>
-          <span className="toolbar-divider" />
-          <ToolbarButton label="预览" onClick={handlePreviewWindow}>
-            <Play size={16} />
-          </ToolbarButton>
-          <ToolbarButton label="演示" onClick={() => handlePresent(0)}>
-            <MonitorPlay size={16} />
-          </ToolbarButton>
-          <ToolbarButton label="导出" onClick={handleExport}>
-            <Download size={16} />
-          </ToolbarButton>
+          <div className="toolbar-group" aria-label="文件">
+            <ToolbarButton label="新建" onClick={handleNewProject}>
+              <FilePlus2 size={16} />
+            </ToolbarButton>
+            <ToolbarButton label="打开" onClick={handleOpenFile}>
+              <FolderOpen size={16} />
+            </ToolbarButton>
+            <ToolbarButton label="文件夹" onClick={handleOpenFolder}>
+              <FolderTree size={16} />
+            </ToolbarButton>
+          </div>
+          <div className="toolbar-group" aria-label="保存">
+            <ToolbarButton label="保存" onClick={handleSave}>
+              <Save size={16} />
+            </ToolbarButton>
+            <ToolbarButton label="另存" onClick={handleSaveAs}>
+              <SaveAll size={16} />
+            </ToolbarButton>
+          </div>
+          <div className="toolbar-group" aria-label="编辑">
+            <ToolbarButton label="撤销" onClick={handleUndo}>
+              <Undo2 size={16} />
+            </ToolbarButton>
+            <ToolbarButton label="重做" onClick={handleRedo}>
+              <Redo2 size={16} />
+            </ToolbarButton>
+            <ToolbarButton label="代码" onClick={openCodeView} active={codeOpen}>
+              <Code2 size={16} />
+            </ToolbarButton>
+          </div>
+          <div className="toolbar-group toolbar-group--output" aria-label="预览与导出">
+            <ToolbarButton label="预览" onClick={handlePreviewWindow}>
+              <Play size={16} />
+            </ToolbarButton>
+            <ToolbarButton label="演示" variant="primary" onClick={() => handlePresent(0)}>
+              <Presentation size={16} />
+            </ToolbarButton>
+            <ToolbarButton label="导出" onClick={handleExport}>
+              <Download size={16} />
+            </ToolbarButton>
+          </div>
         </nav>
       </header>
 
@@ -2780,38 +2981,50 @@ export default function App() {
               </span>
             </div>
             <div className="canvas-tools" onMouseDown={(event) => event.preventDefault()}>
-              <span className="selection-count">{selectedCount ? `已选 ${selectedCount}` : '未选中'}</span>
-              <button type="button" title="左对齐" disabled={!selectedCount} onClick={() => handleAlignSelection('left')}>
-                <AlignStartVertical size={16} />
-              </button>
-              <button type="button" title="水平居中" disabled={!selectedCount} onClick={() => handleAlignSelection('center')}>
-                <AlignCenterVertical size={16} />
-              </button>
-              <button type="button" title="右对齐" disabled={!selectedCount} onClick={() => handleAlignSelection('right')}>
-                <AlignEndVertical size={16} />
-              </button>
-              <button type="button" title="顶端对齐" disabled={!selectedCount} onClick={() => handleAlignSelection('top')}>
-                <AlignStartHorizontal size={16} />
-              </button>
-              <button type="button" title="垂直居中" disabled={!selectedCount} onClick={() => handleAlignSelection('middle')}>
-                <AlignCenterHorizontal size={16} />
-              </button>
-              <button type="button" title="底端对齐" disabled={!selectedCount} onClick={() => handleAlignSelection('bottom')}>
-                <AlignEndHorizontal size={16} />
-              </button>
-              <button type="button" title="水平分布" disabled={!canDistributeSelection} onClick={() => handleDistributeSelection('horizontal')}>
-                <AlignHorizontalSpaceBetween size={16} />
-              </button>
-              <button type="button" title="垂直分布" disabled={!canDistributeSelection} onClick={() => handleDistributeSelection('vertical')}>
-                <AlignVerticalSpaceBetween size={16} />
-              </button>
-              <button type="button" title="组合" disabled={!canGroupSelection} onClick={handleGroupSelection}>
-                <Group size={16} />
-              </button>
-              <button type="button" title="取消组合" disabled={!canUngroupSelection} onClick={handleUngroupSelection}>
-                <Ungroup size={16} />
-              </button>
+              <span className={`selection-count${selectedCount ? ' has-selection' : ''}`}>
+                {selectedCount ? `已选 ${selectedCount}` : '编辑画布'}
+              </span>
+              <div className={`selection-tools${selectedCount ? '' : ' is-hidden'}`} aria-label="对象排列">
+                <button type="button" title="左对齐" disabled={!selectedCount} onClick={() => handleAlignSelection('left')}>
+                  <AlignStartVertical size={16} />
+                </button>
+                <button type="button" title="水平居中" disabled={!selectedCount} onClick={() => handleAlignSelection('center')}>
+                  <AlignCenterVertical size={16} />
+                </button>
+                <button type="button" title="右对齐" disabled={!selectedCount} onClick={() => handleAlignSelection('right')}>
+                  <AlignEndVertical size={16} />
+                </button>
+                <button type="button" title="顶端对齐" disabled={!selectedCount} onClick={() => handleAlignSelection('top')}>
+                  <AlignStartHorizontal size={16} />
+                </button>
+                <button type="button" title="垂直居中" disabled={!selectedCount} onClick={() => handleAlignSelection('middle')}>
+                  <AlignCenterHorizontal size={16} />
+                </button>
+                <button type="button" title="底端对齐" disabled={!selectedCount} onClick={() => handleAlignSelection('bottom')}>
+                  <AlignEndHorizontal size={16} />
+                </button>
+                <button type="button" title="水平分布" disabled={!canDistributeSelection} onClick={() => handleDistributeSelection('horizontal')}>
+                  <AlignHorizontalSpaceBetween size={16} />
+                </button>
+                <button type="button" title="垂直分布" disabled={!canDistributeSelection} onClick={() => handleDistributeSelection('vertical')}>
+                  <AlignVerticalSpaceBetween size={16} />
+                </button>
+                <button type="button" title="组合" disabled={!canGroupSelection} onClick={handleGroupSelection}>
+                  <Group size={16} />
+                </button>
+                <button type="button" title="取消组合" disabled={!canUngroupSelection} onClick={handleUngroupSelection}>
+                  <Ungroup size={16} />
+                </button>
+              </div>
               <span className="canvas-tools-divider" />
+              <button
+                className={canvasInteractionMode === 'interact' ? 'is-active' : ''}
+                type="button"
+                title={canvasInteractionMode === 'interact' ? '返回编辑模式' : '交互预览'}
+                onClick={handleCanvasInteractionToggle}
+              >
+                {canvasInteractionMode === 'interact' ? <Hand size={16} /> : <MousePointer2 size={16} />}
+              </button>
               <label className="toggle-row">
                 <input
                   checked={gridEnabled && !meta.documentMode}
@@ -2821,44 +3034,57 @@ export default function App() {
                 />
                 网格
               </label>
-              <button
-                className={canvasFitMode === 'width' ? 'is-active' : ''}
-                type="button"
-                title="铺满宽度"
-                onClick={() => {
-                  setCanvasFitMode('width');
-                  window.setTimeout(handleFitCanvas, 0);
-                }}
-              >
-                宽
-              </button>
-              <button
-                className={canvasFitMode === 'fit' ? 'is-active' : ''}
-                type="button"
-                title="适配整屏"
-                onClick={() => {
-                  setCanvasFitMode('fit');
-                  window.setTimeout(handleFitCanvas, 0);
-                }}
-              >
-                全
-              </button>
-              <button type="button" title="缩小" onClick={() => setZoom((value) => Math.max(10, value - 10))}>
-                <ZoomOut size={16} />
-              </button>
-              <span className="zoom-value">{zoom}%</span>
-              <button type="button" title="放大" onClick={() => setZoom((value) => Math.min(200, value + 10))}>
-                <ZoomIn size={16} />
-              </button>
-              <button type="button" title="适配画布" onClick={handleFitCanvas}>
-                <Maximize2 size={16} />
-              </button>
+              <div className="canvas-control-cluster canvas-fit-segment" aria-label="画布适配方式">
+                <button
+                  className={canvasFitMode === 'width' ? 'is-active' : ''}
+                  type="button"
+                  title="铺满宽度"
+                  onClick={() => {
+                    setCanvasFitMode('width');
+                    window.setTimeout(handleFitCanvas, 0);
+                  }}
+                >
+                  宽
+                </button>
+                <button
+                  className={canvasFitMode === 'fit' ? 'is-active' : ''}
+                  type="button"
+                  title="适配整屏"
+                  onClick={() => {
+                    setCanvasFitMode('fit');
+                    window.setTimeout(handleFitCanvas, 0);
+                  }}
+                >
+                  全
+                </button>
+              </div>
+              <div className="canvas-control-cluster zoom-control" aria-label="画布缩放">
+                <button type="button" title="缩小" onClick={() => setZoom((value) => Math.max(10, value - 10))}>
+                  <ZoomOut size={16} />
+                </button>
+                <span className="zoom-value">{zoom}%</span>
+                <button type="button" title="放大" onClick={() => setZoom((value) => Math.min(200, value + 10))}>
+                  <ZoomIn size={16} />
+                </button>
+                <button type="button" title="适配画布" onClick={handleFitCanvas}>
+                  <Maximize2 size={16} />
+                </button>
+              </div>
             </div>
           </div>
           <div ref={editorShellRef} className="editor-shell">
             <div ref={editorHostRef} className={`editor-host${meta.documentMode ? ' is-document-mode' : ''}`} />
-            {!meta.documentMode && selectedSlide && (
-              <button className="canvas-resize-handle" type="button" title="拖拽调整画布大小" onMouseDown={handleCanvasResizeStart}>
+            {!meta.documentMode && selectedSlide?.presentationMode === 'fit' && (
+              <button
+                className="canvas-resize-handle"
+                type="button"
+                title="拖拽调整页面尺寸"
+                style={{
+                  left: Math.max(0, renderedCanvasWidth - 108),
+                  top: Math.max(0, renderedCanvasHeight - 28)
+                }}
+                onMouseDown={handleCanvasResizeStart}
+              >
                 <span>
                   {getSlideCanvasWidth(selectedSlide)} × {getSlideCanvasHeight(selectedSlide)}
                 </span>
@@ -3086,7 +3312,13 @@ export default function App() {
           <div className={`page-pane${rightTab !== 'page' ? ' is-hidden' : ''}`}>
             <label>
               项目标题
-              <input value={meta.title} onChange={(event) => setMeta((current) => ({ ...current, title: event.target.value }))} />
+              <input
+                value={meta.title}
+                onChange={(event) => {
+                  setMeta((current) => ({ ...current, title: event.target.value }));
+                  setDirty(true);
+                }}
+              />
             </label>
             <label>
               项目模式
@@ -3192,7 +3424,7 @@ export default function App() {
               </div>
               <div>
                 <span>状态</span>
-                <strong>{dirty ? '未保存' : '已保存'}</strong>
+                <strong>{saveStatusLabel}</strong>
               </div>
             </div>
             <section className="recent-files">
@@ -3216,11 +3448,14 @@ export default function App() {
       </main>
 
       <footer className="statusbar">
-        <span>
-          {dirty ? '有未保存修改' : '已保存'}
-          {lastAutoSavedAt ? ` · 已自动保存 ${new Date(lastAutoSavedAt).toLocaleTimeString()}` : ''}
+        <span className={`statusbar-state${dirty ? ' is-dirty' : meta.filePath ? ' is-saved' : ' is-unsaved'}`}>
+          <i aria-hidden="true" />
+          <span>
+            {saveStatusLabel}
+            {lastAutoSavedAt ? ` · 已自动保存 ${new Date(lastAutoSavedAt).toLocaleTimeString()}` : ''}
+          </span>
         </span>
-        <span>
+        <span className="statusbar-tech">
           HTML/CSS · {selectedSlide ? `${getSlideCanvasWidth(selectedSlide)}×${getSlideCanvasHeight(selectedSlide)}` : '页面'} · 本地文件
         </span>
       </footer>
