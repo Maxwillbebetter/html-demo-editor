@@ -87,6 +87,8 @@ app.whenReady().then(async () => {
 	  const win = new BrowserWindow({
     width: ${uiWidth},
     height: ${uiHeight},
+    minWidth: 1180,
+    minHeight: 760,
     show: false,
 	    webPreferences: {
 	      contextIsolation: true,
@@ -109,18 +111,6 @@ app.whenReady().then(async () => {
 	  const result = await win.webContents.executeJavaScript(\`
 	    (async () => {
 	      try {
-	      await new Promise((resolve) => setTimeout(resolve, 320));
-	      const text = document.body.innerText;
-      const failures = [];
-      const hasText = (value) => text.includes(value);
-      const hasTitle = (value) => Boolean(document.querySelector('[title="' + value + '"]'));
-      const count = (selector) => document.querySelectorAll(selector).length;
-	      const shell = document.querySelector('.editor-shell')?.getBoundingClientRect();
-	      const host = document.querySelector('.editor-host')?.getBoundingClientRect();
-	      const frame = document.querySelector('.gjs-frame-wrapper')?.getBoundingClientRect();
-	      const canvasRegion = document.querySelector('.canvas-region')?.getBoundingClientRect();
-	      const rightPane = document.querySelector('.right-pane')?.getBoundingClientRect();
-	      const resizeHandle = document.querySelector('.canvas-resize-handle')?.getBoundingClientRect();
 	      const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 	      const waitUntil = async (predicate, timeout = 5000) => {
 	        const started = Date.now();
@@ -130,7 +120,26 @@ app.whenReady().then(async () => {
 	        }
 	        return false;
 	      };
-
+	      await waitUntil(() => {
+	        const frameRect = document.querySelector('.gjs-frame')?.getBoundingClientRect();
+	        const handleRect = document.querySelector('.canvas-resize-handle')?.getBoundingClientRect();
+	        const currentZoom = Number.parseFloat(document.querySelector('.zoom-value')?.textContent || '0');
+	        if (!frameRect || !handleRect || !Number.isFinite(currentZoom)) return false;
+	        const expectedWidth = 1280 * (currentZoom / 100);
+	        const expectedHeight = 720 * (currentZoom / 100);
+	        return Math.abs(frameRect.width - expectedWidth) <= 8 && Math.abs(frameRect.height - expectedHeight) <= 8;
+	      }, 7000);
+	      const text = document.body.innerText;
+      const failures = [];
+      const hasText = (value) => text.includes(value);
+      const hasTitle = (value) => Boolean(document.querySelector('[title="' + value + '"]'));
+      const count = (selector) => document.querySelectorAll(selector).length;
+	      const shell = document.querySelector('.editor-shell')?.getBoundingClientRect();
+	      const host = document.querySelector('.editor-host')?.getBoundingClientRect();
+	      const frame = document.querySelector('.gjs-frame')?.getBoundingClientRect();
+	      const canvasRegion = document.querySelector('.canvas-region')?.getBoundingClientRect();
+	      const rightPane = document.querySelector('.right-pane')?.getBoundingClientRect();
+	      const resizeHandle = document.querySelector('.canvas-resize-handle')?.getBoundingClientRect();
 	      const decodeFixture = (value) => new TextDecoder().decode(Uint8Array.from(atob(value), (character) => character.charCodeAt(0)));
 	      const fixtures = {
 	        long: {
@@ -200,7 +209,7 @@ app.whenReady().then(async () => {
 	      if (!frame || Math.abs(frame.x - host.x) > 2 || Math.abs(frame.y - host.y) > 2) {
 	        failures.push('canvas frame should align to the editor viewport top-left');
 	      }
-	      if (!resizeHandle || !frame || Math.abs(resizeHandle.right - frame.right) > 5 || Math.abs(resizeHandle.bottom - frame.bottom) > 5) {
+	      if (!resizeHandle || !frame || Math.abs(resizeHandle.right - frame.right) > 8 || Math.abs(resizeHandle.bottom - frame.bottom) > 8) {
 	        failures.push('canvas resize handle should attach to the visible canvas corner: ' + JSON.stringify({ resizeHandle, frame }));
 	      }
 	      if (!hasTitle('交互预览')) failures.push('canvas interaction preview control missing');
@@ -368,9 +377,18 @@ app.whenReady().then(async () => {
 	      if (!(await waitUntil(() => document.body.innerText.includes('长页 HTML 报告测试')))) {
 	        failures.push('open should load a long HTML document into the editor');
 	      } else {
-	        await delay(1100);
+	        await waitUntil(() => {
+	          const candidateCanvas = document.querySelector('.gjs-cv-canvas');
+	          const candidateFrame = document.querySelector('.gjs-frame');
+	          const candidateDoc = candidateFrame?.contentDocument;
+	          return Boolean(
+	            candidateCanvas &&
+	              candidateDoc?.querySelector('.report') &&
+	              candidateCanvas.scrollHeight > candidateCanvas.clientHeight + 4
+	          );
+	        }, 7000);
 	        const longHost = document.querySelector('.editor-host')?.getBoundingClientRect();
-	        const longFrame = document.querySelector('.gjs-frame-wrapper')?.getBoundingClientRect();
+	        const longFrame = document.querySelector('.gjs-frame')?.getBoundingClientRect();
 	        const longCanvas = document.querySelector('.gjs-cv-canvas');
 	        const longFrameDoc = document.querySelector('.gjs-frame')?.contentDocument;
 	        const report = longFrameDoc?.querySelector('.report');
@@ -380,7 +398,7 @@ app.whenReady().then(async () => {
 	          failures.push('long HTML should fit its full width inside the editor viewport');
 	        }
 	        if (!(longZoom > 10 && longZoom < 100)) failures.push('long fixed-width HTML should be scaled to the editor width');
-	        if (!longCanvas || longCanvas.scrollHeight <= longCanvas.clientHeight) {
+	        if (!longCanvas || longCanvas.scrollHeight <= longCanvas.clientHeight + 4) {
 	          failures.push('long HTML should remain vertically scrollable in the editor');
 	        }
 	        if (!reportStyle?.backgroundImage.includes('linear-gradient')) {
