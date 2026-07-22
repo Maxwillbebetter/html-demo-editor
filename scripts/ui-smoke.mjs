@@ -136,10 +136,11 @@ app.whenReady().then(async () => {
 	        return Math.abs(frameRect.width - expectedWidth) <= 8 && Math.abs(frameRect.height - expectedHeight) <= 8;
 	      }, 7000);
 	      const text = document.body.innerText;
-      const failures = [];
-      const hasText = (value) => text.includes(value);
-      const hasTitle = (value) => Boolean(document.querySelector('[title="' + value + '"]'));
-      const count = (selector) => document.querySelectorAll(selector).length;
+	      const failures = [];
+	      const hasText = (value) => text.includes(value);
+	      const hasTitle = (value) => Boolean(document.querySelector('[title="' + value + '"]'));
+	      const hasAriaLabel = (value) => Boolean(document.querySelector('[aria-label="' + value + '"]'));
+	      const count = (selector) => document.querySelectorAll(selector).length;
 	      const shell = document.querySelector('.editor-shell')?.getBoundingClientRect();
 	      const host = document.querySelector('.editor-host')?.getBoundingClientRect();
 	      const frame = document.querySelector('.gjs-frame')?.getBoundingClientRect();
@@ -210,10 +211,10 @@ app.whenReady().then(async () => {
 	        }
 	      };
 
-      if (!hasText('HTML Demo Editor')) failures.push('brand missing');
-      ['新建', '打开', '保存', '预览', '演示', '导出', '退出'].forEach((label) => {
-        if (!hasText(label) && !hasTitle(label)) failures.push('toolbar missing ' + label);
-      });
+	      if (!hasText('HTML Demo Editor')) failures.push('brand missing');
+	      ['新建', '打开', '保存', '预览', '演示', '导出', '退出'].forEach((label) => {
+	        if (!hasText(label) && !hasTitle(label) && !hasAriaLabel(label)) failures.push('toolbar missing ' + label);
+	      });
 	      if (!hasTitle('插入文本框')) failures.push('toolbar should expose an explicit insert text box action');
 	      const quitButton = document.querySelector('button[title="退出应用"]');
 	      if (!quitButton) {
@@ -292,12 +293,16 @@ app.whenReady().then(async () => {
 	              failures.push('text context menu should identify a partial text selection');
 	            }
 	            selectionMenu?.querySelector('button[title="加粗"]')?.click();
-	            await delay(100);
-	            const partialBold = insertedTextBox.querySelector('span[style*="font-weight"]');
-	            if (!partialBold || partialBold.textContent !== '局部') {
+	            const partialBoldApplied = await waitUntil(() => {
+	              const currentTextBox = frameDoc.querySelector('[data-html-demo-text-box="true"]');
+	              const partialBold = currentTextBox?.querySelector('span[style*="font-weight"]');
+	              return partialBold?.textContent === '局部';
+	            }, 2000);
+	            const currentTextBox = frameDoc.querySelector('[data-html-demo-text-box="true"]');
+	            if (!partialBoldApplied) {
 	              failures.push('bold should apply only to the selected characters');
 	            }
-	            if (insertedTextBox.style.fontWeight) {
+	            if (currentTextBox?.style.fontWeight) {
 	              failures.push('partial text formatting must not style the entire text box');
 	            }
 	            if (

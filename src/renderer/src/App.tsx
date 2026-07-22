@@ -961,6 +961,7 @@ function ToolbarButton({
     <button
       className={`toolbar-button toolbar-button--${variant}${active ? ' is-active' : ''}`}
       type="button"
+      aria-label={label}
       title={title || label}
       onClick={onClick}
     >
