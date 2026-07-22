@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Outer visualization wrapper</title>
+  <style>
+    html, body { margin: 0; }
+    body { padding: 16px; }
+    iframe { display: block; width: 100%; max-width: 1440px; height: calc(100vh - 32px); border: 0; }
+  </style>
+</head>
+<body>
+  <iframe sandbox="allow-scripts" title="Embedded report" srcdoc="&lt;!doctype html&gt;
+&lt;html lang=&quot;en&quot; class=&quot;embedded-theme&quot;&gt;
+&lt;head&gt;
+  &lt;meta charset=&quot;utf-8&quot;&gt;
+  &lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;
+  &lt;title&gt;Embedded srcdoc report&lt;/title&gt;
+  &lt;style&gt;
+    :root {
+      color-scheme: light;
+      --report-accent: #5e5ce6;
+    }
+    html, body { margin: 0; }
+    body {
+      color: light-dark(rgb(23 48 68), rgb(238 248 245));
+      background: #eef8f5;
+      font-family: Arial, sans-serif;
+    }
+    #embedded-report {
+      min-height: 1900px;
+      padding: 48px;
+      background: linear-gradient(180deg, #eef8f5 0%, #ffffff 100%);
+    }
+    #embedded-report h1 { margin: 0 0 20px; font-size: 64px; }
+    #embedded-report h3 { margin: 0 0 18px; font-size: 30px; }
+    #embedded-report .panel {
+      max-width: 920px;
+      padding: 28px;
+      background: color-mix(in srgb, var(--report-accent) 32%, #ffffff);
+      border: 4px solid color-mix(in srgb, var(--report-accent) 72%, #ffffff);
+    }
+  &lt;/style&gt;
+&lt;/head&gt;
+&lt;body data-qa-source=&quot;srcdoc&quot;&gt;
+  &lt;main id=&quot;embedded-report&quot;&gt;
+    &lt;h1&gt;Embedded srcdoc report&lt;/h1&gt;
+    &lt;h3 id=&quot;nested-heading&quot;&gt;Nested &lt;span&gt;H3 editable text&lt;/span&gt;&lt;/h3&gt;
+    &lt;section class=&quot;panel&quot;&gt;This content must appear in the main editor canvas.&lt;/section&gt;
+  &lt;/main&gt;
+  &lt;script&gt;document.body.dataset.srcdocScriptLoaded = 'true';&lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;"></iframe>
+</body>
+</html>

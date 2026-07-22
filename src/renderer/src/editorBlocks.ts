@@ -1,5 +1,7 @@
 import type { Editor } from 'grapesjs';
 
+const EDITABLE_TEXT_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'blockquote', 'figcaption', 'pre']);
+
 export const STYLE_SECTORS = [
   {
     name: '布局',
@@ -74,18 +76,32 @@ export function registerEditorBlocks(editor: Editor): void {
   const bm = editor.BlockManager;
   const imageSrc = placeholderImage();
 
+  // AI-generated headings often contain nested spans. GrapesJS otherwise
+  // parses those headings as generic components, which disables its RTE.
+  editor.Components.addType('html-demo-rich-text', {
+    extend: 'text',
+    isComponent: (element) => {
+      const tagName = element.tagName?.toLowerCase();
+      return tagName && EDITABLE_TEXT_TAGS.has(tagName) ? { type: 'html-demo-rich-text' } : false;
+    }
+  });
+
   bm.add('demo-title', {
-    label: '标题',
+    label: '大标题',
     category: '基础',
+    select: true,
+    activate: true,
     content:
       '<h1 data-gjs-type="text" style="position:absolute;left:72px;top:72px;width:760px;margin:0;color:#18202b;font-size:56px;line-height:1.08;font-weight:800;">双击编辑标题</h1>'
   });
 
   bm.add('demo-paragraph', {
-    label: '正文',
+    label: '文本框',
     category: '基础',
+    select: true,
+    activate: true,
     content:
-      '<p data-gjs-type="text" style="position:absolute;left:76px;top:160px;width:620px;margin:0;color:#4f5d6d;font-size:24px;line-height:1.45;">这里是一段正文说明，可以用于解释背景、结论或下一步行动。</p>'
+      '<p data-gjs-type="text" data-html-demo-text-box="true" style="position:absolute;left:76px;top:160px;width:620px;margin:0;color:#4f5d6d;font-size:24px;line-height:1.45;">输入文字</p>'
   });
 
   bm.add('demo-image', {

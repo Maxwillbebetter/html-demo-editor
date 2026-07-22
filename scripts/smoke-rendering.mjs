@@ -17,6 +17,8 @@ const mainPath = join(tempDir, 'main.cjs');
 const shortFixture = await readFile(join(root, 'fixtures/qa/short-card.html'), 'utf8');
 const longFixture = await readFile(join(root, 'fixtures/qa/long-report.html'), 'utf8');
 const interactiveFixture = await readFile(join(root, 'fixtures/qa/interactive/index.html'), 'utf8');
+const srcdocFixture = await readFile(join(root, 'fixtures/qa/srcdoc-wrapper.html'), 'utf8');
+const templateRuntimeFixture = await readFile(join(root, 'fixtures/qa/template-runtime.html'), 'utf8');
 const fixture = String.raw`<!doctype html>
 <html class="theme-dark" data-density="demo">
 <head>
@@ -47,6 +49,8 @@ const fixture = ${JSON.stringify(fixture)};
 const shortFixture = ${JSON.stringify(shortFixture)};
 const longFixture = ${JSON.stringify(longFixture)};
 const interactiveFixture = ${JSON.stringify(interactiveFixture)};
+const srcdocFixture = ${JSON.stringify(srcdocFixture)};
+const templateRuntimeFixture = ${JSON.stringify(templateRuntimeFixture)};
 const explicitSlidesFixture = '<!doctype html><html><head><title>Slides</title><style>.page{width:1280px;height:720px}</style></head><body><section data-slide class="page"><h1>One</h1></section><section data-slide class="page"><h1>Two</h1></section></body></html>';
 const parsed = parseHtmlProject(fixture, 'index.html', '/tmp/ai-report/index.html', '/tmp/ai-report');
 const slide = parsed.slides[0];
@@ -86,6 +90,50 @@ const longParsed = parseHtmlProject(longFixture, 'long-report.html', '/tmp/qa/lo
 assert(longParsed.meta.documentMode === true, 'long report with multiple normal sections should remain document mode');
 assert(longParsed.slides.length === 1, 'normal sections must not be guessed as slides');
 assert(longParsed.slides[0].canvasHeight >= 1600, 'long report should get a tall editable canvas');
+
+const srcdocParsed = parseHtmlProject(srcdocFixture, 'srcdoc-wrapper.html', '/tmp/qa/srcdoc-wrapper.html', '/tmp/qa');
+const srcdocSlide = srcdocParsed.slides[0];
+const srcdocExport = buildExportHtml(srcdocParsed.slides, srcdocParsed.meta);
+const srcdocPreview = buildSlidePreviewDoc(srcdocSlide, srcdocParsed.meta);
+assert(srcdocParsed.meta.title === 'Embedded srcdoc report', 'srcdoc import should use the embedded document title');
+assert(srcdocParsed.meta.documentMode === true, 'srcdoc import should remain a scrollable document');
+assert(srcdocSlide.components.includes('id="embedded-report"'), 'srcdoc import should expose embedded content to the editor');
+assert(!srcdocSlide.components.includes('<iframe'), 'srcdoc import should not leave an uneditable nested iframe');
+assert(srcdocSlide.css.includes('#embedded-report'), 'srcdoc import should preserve embedded styles');
+assert(srcdocSlide.css.includes('color-mix(in srgb'), 'srcdoc import should preserve modern color functions verbatim');
+assert(srcdocParsed.meta.bodyScripts.includes('srcdocScriptLoaded'), 'srcdoc import should preserve embedded scripts');
+assert(srcdocParsed.meta.htmlAttributes?.class === 'embedded-theme', 'srcdoc import should preserve embedded html attributes');
+assert(srcdocParsed.meta.bodyAttributes?.['data-qa-source'] === 'srcdoc', 'srcdoc import should preserve embedded body attributes');
+assert(srcdocExport.includes('This content must appear in the main editor canvas.'), 'srcdoc export should keep embedded content');
+assert(srcdocExport.includes('srcdocScriptLoaded'), 'srcdoc export should keep embedded scripts');
+assert(srcdocExport.includes('color-mix(in srgb'), 'srcdoc export should keep modern color functions');
+assert(!srcdocExport.includes('srcdoc='), 'srcdoc export should become a directly usable HTML document');
+assert(srcdocPreview.includes('id="embedded-report"'), 'srcdoc preview should render the same content as the editor');
+
+const templateRuntimeParsed = parseHtmlProject(
+  templateRuntimeFixture,
+  'template-runtime.html',
+  '/tmp/qa/template-runtime.html',
+  '/tmp/qa'
+);
+const templateRuntimeExport = buildExportHtml(templateRuntimeParsed.slides, templateRuntimeParsed.meta);
+assert(
+  templateRuntimeParsed.meta.bodyTemplates.includes('id="runtime-chart-source"') &&
+    templateRuntimeParsed.meta.bodyTemplates.includes('data-template-chart="ready"'),
+  'body template contents should be preserved outside the GrapesJS component tree'
+);
+assert(
+  !templateRuntimeParsed.slides[0].components.includes('runtime-chart-source'),
+  'runtime templates should not be reparsed as editable components'
+);
+assert(
+  templateRuntimeExport.indexOf('id="runtime-chart-source"') < templateRuntimeExport.indexOf("document.getElementById('runtime-chart-source')"),
+  'document export should restore runtime templates before their loader scripts'
+);
+assert(
+  templateRuntimeExport.includes('data-template-chart="ready"'),
+  'document export should retain the complete template payload'
+);
 
 const interactiveParsed = parseHtmlProject(
   interactiveFixture,
@@ -172,32 +220,42 @@ app.whenReady().then(async () => {
 `
 );
 
-const child = spawn(electronPath, [mainPath], {
-  cwd: root,
-  stdio: ['ignore', 'pipe', 'pipe']
-});
+async function runElectronSmoke() {
+  const child = spawn(electronPath, [mainPath], {
+    cwd: root,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const code = await new Promise((resolveExit) => {
+    child.on('exit', (exitCode) => resolveExit(exitCode ?? 1));
+  });
+  return { code, stdout, stderr };
+}
 
-let stdout = '';
-let stderr = '';
-child.stdout.on('data', (chunk) => {
-  stdout += chunk;
-});
-child.stderr.on('data', (chunk) => {
-  stderr += chunk;
-});
-
-const code = await new Promise((resolveExit) => {
-  child.on('exit', (exitCode) => resolveExit(exitCode ?? 1));
-});
-
-const resultLine = stdout
+let run = await runElectronSmoke();
+let resultLine = run.stdout
   .split(/\r?\n/)
   .map((line) => line.trim())
   .find((line) => line.startsWith('SMOKE_RESULT:'));
 
+if (!resultLine && !run.stderr.trim()) {
+  run = await runElectronSmoke();
+  resultLine = run.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.startsWith('SMOKE_RESULT:'));
+}
+
 if (!resultLine) {
-  console.error(stdout);
-  console.error(stderr);
+  console.error(run.stdout);
+  console.error(run.stderr);
   throw new Error('Smoke test did not return a result');
 }
 
@@ -207,5 +265,5 @@ if (!result.ok) {
   process.exit(1);
 }
 
-if (code !== 0) process.exit(code);
+if (run.code !== 0) process.exit(run.code);
 console.log('Smoke rendering checks passed.');

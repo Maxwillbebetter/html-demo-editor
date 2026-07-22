@@ -30,5 +30,6 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   exportPackage: (payload: ExportPayload): Promise<SaveResult | null> =>
     ipcRenderer.invoke('project:export-package', payload),
   selectImage: (): Promise<ImageAssetResult | null> => ipcRenderer.invoke('asset:select-image'),
-  presentProject: (payload: PresentPayload): Promise<void> => ipcRenderer.invoke('project:present', payload)
+  presentProject: (payload: PresentPayload): Promise<void> => ipcRenderer.invoke('project:present', payload),
+  quitApplication: (): Promise<void> => ipcRenderer.invoke('app:quit')
 });

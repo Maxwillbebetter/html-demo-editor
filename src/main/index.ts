@@ -523,6 +523,70 @@ html.html-demo-preview-pointer-laser .html-demo-preview-laser {
   return `${withStyle}${shellScript}`;
 }
 
+function withPresenterExitControl(html: string): string {
+  if (/data-html-demo-window-exit/i.test(html)) return html;
+
+  const exitStyle = `<style data-html-demo-window-exit>
+html body .html-demo-window-exit {
+  position: fixed !important;
+  top: 16px !important;
+  right: 16px !important;
+  z-index: 2147483647 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  min-width: 72px !important;
+  height: 36px !important;
+  margin: 0 !important;
+  padding: 0 12px !important;
+  border: 1px solid rgba(15, 23, 42, 0.18) !important;
+  border-radius: 8px !important;
+  background: rgba(255, 255, 255, 0.94) !important;
+  color: #18202b !important;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.2) !important;
+  font: 600 13px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Arial, sans-serif !important;
+  letter-spacing: 0 !important;
+  cursor: pointer !important;
+  pointer-events: auto !important;
+  opacity: 0.92 !important;
+}
+html body .html-demo-window-exit:hover,
+html body .html-demo-window-exit:focus-visible {
+  border-color: #007aff !important;
+  color: #0066cc !important;
+  opacity: 1 !important;
+  outline: none !important;
+}
+html body .html-demo-window-exit-mark {
+  font: 400 20px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif !important;
+}
+</style>`;
+  const exitScript = `<script data-html-demo-window-exit>
+(() => {
+  const mountExit = () => {
+    if (!document.body || document.querySelector('.html-demo-window-exit')) return;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'html-demo-window-exit';
+    button.title = '退出 (Esc)';
+    button.setAttribute('aria-label', '退出预览或演示');
+    button.innerHTML = '<span class="html-demo-window-exit-mark" aria-hidden="true">&times;</span><span>退出</span>';
+    button.addEventListener('click', () => window.close());
+    document.body.appendChild(button);
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mountExit, { once: true });
+  else mountExit();
+})();
+</script>`;
+  const withStyle = /<\/head>/i.test(html)
+    ? html.replace(/<\/head>/i, `${exitStyle}</head>`)
+    : `<!doctype html><html><head>${exitStyle}</head><body>${html}</body></html>`;
+
+  if (/<\/body>/i.test(withStyle)) return withStyle.replace(/<\/body>/i, `${exitScript}</body>`);
+  return `${withStyle}${exitScript}`;
+}
+
 async function chooseSavePath(defaultName = 'demo-material.html'): Promise<string | null> {
   const options: SaveDialogOptions = {
     title: '保存 HTML 演示材料',
@@ -704,12 +768,16 @@ ipcMain.handle('asset:select-image', async () => {
   };
 });
 
+ipcMain.handle('app:quit', () => {
+  app.quit();
+});
+
 ipcMain.handle('project:present', async (_event, payload: PresentPayload) => {
   const tempDir = await mkdir(join(tmpdir(), 'html-demo-editor-presenter'), { recursive: true }).then(
     () => join(tmpdir(), 'html-demo-editor-presenter')
   );
   const presentPath = join(tempDir, 'index.html');
-  await writeFile(presentPath, withPreviewShell(withBaseHref(payload.html, payload.baseDir)), 'utf8');
+  await writeFile(presentPath, withPresenterExitControl(withPreviewShell(withBaseHref(payload.html, payload.baseDir))), 'utf8');
 
   if (presenterWindow && !presenterWindow.isDestroyed()) {
     presenterWindow.close();

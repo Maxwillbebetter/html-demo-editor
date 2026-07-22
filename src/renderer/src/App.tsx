@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import grapesjs, { type Component, type Editor, type ResizerOptions } from 'grapesjs';
+import grapesjs, { type Component, type Editor, type ResizerOptions, type RichTextEditorAction } from 'grapesjs';
 import basicBlocks from 'grapesjs-blocks-basic';
 import {
   AlignCenterHorizontal,
@@ -45,6 +45,7 @@ import {
   Undo2,
   Ungroup,
   Underline,
+  X,
   ZoomIn,
   ZoomOut
 } from 'lucide-react';
@@ -96,8 +97,28 @@ const FONT_OPTIONS = [
   { label: '宋体', value: 'SimSun, serif' },
   { label: '等宽', value: '"Cascadia Code", Consolas, monospace' }
 ];
+const INLINE_TEXT_STYLE_PROPERTIES = new Set([
+  'font-family',
+  'font-size',
+  'font-weight',
+  'font-style',
+  'line-height',
+  'letter-spacing',
+  'color',
+  'background-color',
+  'text-decoration'
+]);
 const SNAP_THRESHOLD = 6;
 const RECENT_FILE_LIMIT = 8;
+
+function contentSignature(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${value.length}:${(hash >>> 0).toString(36)}`;
+}
 
 type LeftTab = 'slides' | 'blocks';
 type RightTab = 'style' | 'layers' | 'page';
@@ -134,8 +155,17 @@ interface ContextMenuState {
   label: string;
   isImage: boolean;
   canEditText: boolean;
+  hasTextSelection: boolean;
   summary: SelectedSummary;
 }
+
+interface TextSelectionSnapshot {
+  range: Range;
+  root: HTMLElement;
+  component: Component;
+}
+
+type GrapesRichTextEditor = Parameters<RichTextEditorAction['result']>[0];
 
 interface ComponentSelectionItem {
   key: string;
@@ -213,6 +243,16 @@ function applyEditorCanvasZoom(editor: Editor | null, value: number): number {
   }
   canvas.setZoom(next);
   return next;
+}
+
+function resetEditorCanvasScroll(editor: Editor): void {
+  const container = editor.getContainer();
+  const scrollContainer = container?.querySelector('.gjs-cv-canvas');
+  if (scrollContainer instanceof HTMLElement) {
+    scrollContainer.scrollLeft = 0;
+    scrollContainer.scrollTop = 0;
+  }
+  editor.Canvas.getWindow()?.scrollTo(0, 0);
 }
 
 function makeSlideId(): string {
@@ -644,6 +684,116 @@ function isTextLikeComponent(component: Component | null): boolean {
   return ['a', 'button', 'figcaption', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'p', 'span', 'td', 'th'].includes(tagName);
 }
 
+function captureTextSelection(editor: Editor): TextSelectionSnapshot | null {
+  const doc = editor.Canvas.getDocument();
+  const selection = doc?.getSelection();
+  if (!selection?.rangeCount || selection.isCollapsed) return null;
+
+  const range = selection.getRangeAt(0);
+  const startElement = getClickElement(range.startContainer);
+  const endElement = getClickElement(range.endContainer);
+  const root = (startElement?.closest('[contenteditable="true"]') || endElement?.closest('[contenteditable="true"]')) as HTMLElement | null;
+  if (!root || !root.contains(range.startContainer) || !root.contains(range.endContainer)) return null;
+
+  const component = getGrapesComponentFromElement(editor, root);
+  if (!component || !isTextLikeComponent(component)) return null;
+  return { range: range.cloneRange(), root, component };
+}
+
+function applyStylesToTextRange(range: Range, root: HTMLElement, styles: Record<string, string>): Range | null {
+  if (range.collapsed || !root.isConnected || !root.contains(range.startContainer) || !root.contains(range.endContainer)) return null;
+
+  const doc = root.ownerDocument;
+  const span = doc.createElement('span');
+  Object.entries(styles).forEach(([property, value]) => span.style.setProperty(property, value));
+
+  try {
+    span.appendChild(range.extractContents());
+    range.insertNode(span);
+    const nextRange = doc.createRange();
+    nextRange.selectNodeContents(span);
+    const selection = doc.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(nextRange);
+    return nextRange.cloneRange();
+  } catch (error) {
+    console.error('Unable to format text selection', error);
+    return null;
+  }
+}
+
+function selectedTextComputedStyle(snapshot: TextSelectionSnapshot, property: string): string {
+  const node = snapshot.range.startContainer;
+  const element = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
+  const win = snapshot.root.ownerDocument.defaultView;
+  return element && win ? win.getComputedStyle(element).getPropertyValue(property).trim() : '';
+}
+
+function applyRichTextEditorStyles(rte: GrapesRichTextEditor, styles: Record<string, string>): void {
+  const selection = rte.selection();
+  if (!selection?.rangeCount || selection.isCollapsed) return;
+  const nextRange = applyStylesToTextRange(selection.getRangeAt(0).cloneRange(), rte.el, styles);
+  if (!nextRange) return;
+  const EventConstructor = rte.doc.defaultView?.Event || Event;
+  rte.el.dispatchEvent(new EventConstructor('input', { bubbles: true }));
+  rte.updateActiveActions();
+}
+
+function richTextEditorActions(): (string | RichTextEditorAction)[] {
+  const fontOptions = FONT_OPTIONS.map(
+    (option) => `<option value='${option.value.replaceAll("'", '&#39;')}'>${option.label}</option>`
+  ).join('');
+  const sizeOptions = [12, 16, 20, 24, 28, 32, 40, 48, 56, 64, 72, 96]
+    .map((size) => `<option value="${size}px">${size}</option>`)
+    .join('');
+
+  return [
+    'bold',
+    'italic',
+    'underline',
+    {
+      name: 'htmlDemoFontFamily',
+      icon: `<select aria-label="局部字体"><option value="">字体</option>${fontOptions}</select>`,
+      event: 'change',
+      attributes: { title: '设置所选文字的字体' },
+      result: (rte, action) => {
+        const value = (action.btn?.querySelector('select') as HTMLSelectElement | null)?.value;
+        if (value) applyRichTextEditorStyles(rte, { 'font-family': value });
+      }
+    },
+    {
+      name: 'htmlDemoFontSize',
+      icon: `<select aria-label="局部字号"><option value="">字号</option>${sizeOptions}</select>`,
+      event: 'change',
+      attributes: { title: '设置所选文字的字号' },
+      result: (rte, action) => {
+        const value = (action.btn?.querySelector('select') as HTMLSelectElement | null)?.value;
+        if (value) applyRichTextEditorStyles(rte, { 'font-size': value });
+      }
+    },
+    {
+      name: 'htmlDemoTextColor',
+      icon: '<input aria-label="局部文字颜色" type="color" value="#1d1d1f">',
+      event: 'input',
+      attributes: { title: '设置所选文字的颜色' },
+      result: (rte, action) => {
+        const value = (action.btn?.querySelector('input') as HTMLInputElement | null)?.value;
+        if (value) applyRichTextEditorStyles(rte, { color: value });
+      }
+    },
+    {
+      name: 'htmlDemoHighlightColor',
+      icon: '<input aria-label="局部文字背景" type="color" value="#fff4a3">',
+      event: 'input',
+      attributes: { title: '设置所选文字的背景色' },
+      result: (rte, action) => {
+        const value = (action.btn?.querySelector('input') as HTMLInputElement | null)?.value;
+        if (value) applyRichTextEditorStyles(rte, { 'background-color': value });
+      }
+    }
+  ];
+}
+
 function isEditableShortcutTarget(target: EventTarget | null): boolean {
   const element = getClickElement(target);
   if (!element) return false;
@@ -845,6 +995,7 @@ export default function App() {
   const [selectionItems, setSelectionItems] = useState<ComponentSelectionItem[]>([]);
   const [layerItems, setLayerItems] = useState<LayerItem[]>([]);
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
+  const [textEditing, setTextEditing] = useState(false);
 
   const editorHostRef = useRef<HTMLDivElement | null>(null);
   const editorShellRef = useRef<HTMLDivElement | null>(null);
@@ -866,6 +1017,7 @@ export default function App() {
   const selectionItemsRef = useRef<ComponentSelectionItem[]>([]);
   const lastSelectionItemsRef = useRef<ComponentSelectionItem[]>([]);
   const lastSelectedComponentsRef = useRef<Component[]>([]);
+  const textSelectionRef = useRef<TextSelectionSnapshot | null>(null);
   const persistedHtmlRef = useRef(initialProjectHtml);
 
   useEffect(() => {
@@ -1169,6 +1321,20 @@ export default function App() {
       doc.head.appendChild(clone);
     });
 
+    const activeSlide =
+      slidesRef.current.find((slide) => slide.id === currentSlideIdRef.current) ?? slidesRef.current[0];
+    if (activeSlide?.css.trim()) {
+      const sourceStyle = doc.createElement('style');
+      sourceStyle.id = 'html-demo-editor-source-style';
+      sourceStyle.setAttribute('data-html-demo-editor-managed', 'head');
+      sourceStyle.textContent = activeSlide.css;
+      doc.head.appendChild(sourceStyle);
+    }
+
+    // Keep editor-only outlines after imported styles without reparsing the source CSS.
+    // GrapesJS drops some modern declarations such as color-mix() when setStyle() is used.
+    doc.head.appendChild(helperStyle);
+
     const previousClasses = (doc.body.getAttribute('data-html-demo-editor-managed-body-classes') || '').split(/\s+/).filter(Boolean);
     previousClasses.forEach((className) => doc.body.classList.remove(className));
     const previousAttrs = (doc.body.getAttribute('data-html-demo-editor-managed-body-attrs') || '').split(/\s+/).filter(Boolean);
@@ -1194,14 +1360,38 @@ export default function App() {
     doc.body.setAttribute('data-html-demo-editor-managed-body-classes', managedClasses.join(' '));
     doc.body.setAttribute('data-html-demo-editor-managed-body-attrs', managedAttrs.join(' '));
 
-    const scriptSignature = metaRef.current.bodyScripts || '';
+    const bodyTemplates = metaRef.current.bodyTemplates || '';
+    const bodyTemplateSignature = contentSignature(bodyTemplates);
+    const hasManagedBodyTemplates = Boolean(
+      doc.body.querySelector('[data-html-demo-editor-managed="body-template"]')
+    );
+    if (
+      doc.body.getAttribute('data-html-demo-editor-template-signature') !== bodyTemplateSignature ||
+      (bodyTemplates.trim() && !hasManagedBodyTemplates)
+    ) {
+      doc.body.querySelectorAll('[data-html-demo-editor-managed="body-template"]').forEach((node) => node.remove());
+      doc.body.setAttribute('data-html-demo-editor-template-signature', bodyTemplateSignature);
+
+      if (bodyTemplates.trim()) {
+        const bodyTemplateContainer = doc.createElement('template');
+        bodyTemplateContainer.innerHTML = bodyTemplates;
+        Array.from(bodyTemplateContainer.content.children).forEach((sourceTemplate) => {
+          const template = sourceTemplate.cloneNode(true) as HTMLElement;
+          template.setAttribute('data-html-demo-editor-managed', 'body-template');
+          doc.body.appendChild(template);
+        });
+      }
+    }
+
+    const bodyScripts = metaRef.current.bodyScripts || '';
+    const scriptSignature = contentSignature(bodyScripts);
     if (doc.body.getAttribute('data-html-demo-editor-script-signature') !== scriptSignature) {
       doc.body.querySelectorAll('[data-html-demo-editor-managed="body-script"]').forEach((node) => node.remove());
       doc.body.setAttribute('data-html-demo-editor-script-signature', scriptSignature);
 
-      if (scriptSignature.trim()) {
+      if (bodyScripts.trim()) {
         const scriptTemplate = doc.createElement('template');
-        scriptTemplate.innerHTML = scriptSignature;
+        scriptTemplate.innerHTML = bodyScripts;
         Array.from(scriptTemplate.content.querySelectorAll('script')).forEach((sourceScript) => {
           const script = doc.createElement('script');
           Array.from(sourceScript.attributes).forEach((attr) => script.setAttribute(attr.name, attr.value));
@@ -1313,13 +1503,19 @@ export default function App() {
       measuredDocumentWidthSlideRef.current = null;
       updateCanvasDevice(normalized);
       editor.setComponents(normalized.components);
-      editor.setStyle(normalized.css);
+      editor.setStyle('');
       enableComponentResize(editor.getWrapper());
       applyEditorCanvasZoom(editor, zoomRef.current);
-      window.requestAnimationFrame(() => applyEditorCanvasZoom(editor, zoomRef.current));
+      resetEditorCanvasScroll(editor);
+      window.requestAnimationFrame(() => {
+        applyEditorCanvasZoom(editor, zoomRef.current);
+        resetEditorCanvasScroll(editor);
+      });
       (editor as unknown as { setDragMode?: (mode: string) => void }).setDragMode?.('absolute');
       setSelectedSummary(null);
       setSelectionItems([]);
+      setTextEditing(false);
+      textSelectionRef.current = null;
       selectionItemsRef.current = [];
       lastSelectionItemsRef.current = [];
       lastSelectedComponentsRef.current = [];
@@ -1337,7 +1533,7 @@ export default function App() {
                 ? {
                     ...item,
                     components: editor.getHtml(),
-                    css: editor.getCss() ?? ''
+                    css: item.css
                   }
                 : item
             );
@@ -1367,7 +1563,7 @@ export default function App() {
         ? {
             ...slide,
             components: editor.getHtml(),
-            css: editor.getCss() ?? ''
+            css: slide.css
           }
         : slide
     );
@@ -1450,6 +1646,12 @@ export default function App() {
         appendTo: '#style-manager-panel',
         sectors: STYLE_SECTORS as never
       },
+      parser: {
+        textTags: ['br', 'b', 'strong', 'i', 'em', 'u', 's', 'span', 'mark', 'small', 'sub', 'sup', 'a', 'ul', 'ol']
+      },
+      richTextEditor: {
+        actions: richTextEditorActions()
+      } as never,
       canvas: {
         styles: [],
         scripts: [],
@@ -1483,11 +1685,18 @@ export default function App() {
         if ((frameDoc as Document & { __htmlDemoSelectionBridge?: boolean }).__htmlDemoSelectionBridge) return;
 
         (frameDoc as Document & { __htmlDemoSelectionBridge?: boolean }).__htmlDemoSelectionBridge = true;
+        const retainTextSelection = () => {
+          const snapshot = captureTextSelection(editor);
+          if (snapshot) textSelectionRef.current = snapshot;
+        };
+        frameDoc.addEventListener('selectionchange', retainTextSelection);
+        frameDoc.addEventListener('mouseup', retainTextSelection, true);
         frameDoc.addEventListener(
           'mousedown',
           (event) => {
             if (canvasInteractionModeRef.current === 'interact') return;
             if (event.button !== 0 || isEditableShortcutTarget(event.target)) return;
+            textSelectionRef.current = null;
             const component = getGrapesComponentFromElement(editor, event.target);
             if ((event.shiftKey || event.metaKey || event.ctrlKey) && component && !isRootLikeComponent(component)) {
               event.preventDefault();
@@ -1574,6 +1783,10 @@ export default function App() {
           'click',
           (event) => {
             if (canvasInteractionModeRef.current === 'interact') return;
+            if (isEditableShortcutTarget(event.target)) {
+              retainTextSelection();
+              return;
+            }
             const component = getGrapesComponentFromElement(editor, event.target);
             if (!component) return;
 
@@ -1591,12 +1804,37 @@ export default function App() {
           },
           true
         );
+        frameDoc.addEventListener(
+          'dblclick',
+          (event) => {
+            if (canvasInteractionModeRef.current === 'interact') return;
+            const component = getGrapesComponentFromElement(editor, event.target);
+            if (!component || !isTextLikeComponent(component)) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+            textSelectionRef.current = null;
+            editor.select(component);
+            applyManualSelectionState([component]);
+            setRightTab('style');
+            component.trigger('active', event);
+            window.setTimeout(retainTextSelection, 0);
+          },
+          true
+        );
         const handleFrameContextMenu = (event: MouseEvent) => {
             if (canvasInteractionModeRef.current === 'interact') return;
             const markedEvent = event as MouseEvent & { __htmlDemoContextHandled?: boolean };
             if (markedEvent.__htmlDemoContextHandled) return;
             markedEvent.__htmlDemoContextHandled = true;
-            const component = getGrapesComponentFromElement(editor, event.target);
+            const capturedTextSelection = captureTextSelection(editor);
+            if (capturedTextSelection) textSelectionRef.current = capturedTextSelection;
+            const eventTarget = getClickElement(event.target);
+            const component =
+              capturedTextSelection && eventTarget && capturedTextSelection.root.contains(eventTarget)
+                ? capturedTextSelection.component
+                : getGrapesComponentFromElement(editor, event.target);
             if (!component) {
               setContextMenu(null);
               return;
@@ -1625,6 +1863,7 @@ export default function App() {
               label: summary.label || '元素',
               isImage: summary.isImage || false,
               canEditText: isTextLikeComponent(component),
+              hasTextSelection: Boolean(capturedTextSelection && capturedTextSelection.component === component),
               summary
             });
         };
@@ -1679,7 +1918,7 @@ export default function App() {
             ? {
                 ...slide,
                 components: editor.getHtml(),
-                css: editor.getCss() ?? ''
+                css: slide.css
               }
             : slide
         );
@@ -1718,6 +1957,16 @@ export default function App() {
       setRightTab('style');
     });
     editor.on('component:deselected', syncSelectionState);
+    editor.on('rte:enable', () => {
+      setTextEditing(true);
+      window.setTimeout(() => {
+        const snapshot = captureTextSelection(editor);
+        if (snapshot) textSelectionRef.current = snapshot;
+      }, 0);
+    });
+    editor.on('rte:disable', () => {
+      setTextEditing(false);
+    });
     editor.on('canvas:frame:load', () => {
       syncCanvasHelpers();
       installSelectionBridge();
@@ -1968,6 +2217,11 @@ export default function App() {
       notify('导出失败，请检查目标文件夹权限');
     }
   }, [materializeHtml, notify]);
+
+  const handleQuitApplication = useCallback(async () => {
+    if (!confirmDiscard()) return;
+    await window.desktopBridge.quitApplication();
+  }, [confirmDiscard]);
 
   const handlePresent = useCallback(async (startSlideIndex = 0) => {
     try {
@@ -2445,6 +2699,48 @@ export default function App() {
     setDirty(true);
   }, [refreshLayerItems, syncSelectionState]);
 
+  const handleInsertTextBox = useCallback(() => {
+    const editor = editorRef.current;
+    const frameDoc = editor?.Canvas.getDocument();
+    if (!editor || !frameDoc) return;
+
+    const rootElement = frameDoc.querySelector('[data-htmlppt-document-root], .deck-slide') as HTMLElement | null;
+    const parent = (rootElement && getGrapesComponentFromElement(editor, rootElement)) || editor.getWrapper();
+    if (!parent) return;
+
+    const existingCount = frameDoc.querySelectorAll('[data-html-demo-text-box]').length;
+    const offset = (existingCount % 8) * 18;
+    const content = metaRef.current.documentMode
+      ? '<p data-gjs-type="text" data-html-demo-text-box="true" style="position:relative;display:block;width:min(720px,calc(100% - 48px));margin:24px auto;color:#1d1d1f;font-size:24px;line-height:1.45;">输入文字</p>'
+      : `<div data-gjs-type="text" data-html-demo-text-box="true" style="position:absolute;left:${96 + offset}px;top:${96 + offset}px;width:520px;min-height:42px;margin:0;color:#1d1d1f;font-size:28px;line-height:1.35;">输入文字</div>`;
+    const [added] = parent.append(content);
+    if (!added) return;
+
+    enableComponentResize(added);
+    editor.select(added);
+    applyManualSelectionState([added]);
+    setRightTab('style');
+    setDirty(true);
+    refreshLayerItems();
+
+    window.setTimeout(() => {
+      const element = added.getEl?.() as HTMLElement | undefined;
+      if (!element) return;
+      added.trigger('active');
+      window.setTimeout(() => {
+        element.focus({ preventScroll: true });
+        const range = frameDoc.createRange();
+        range.selectNodeContents(element);
+        const selection = frameDoc.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        const snapshot = captureTextSelection(editor);
+        if (snapshot) textSelectionRef.current = snapshot;
+      }, 0);
+    }, 0);
+    notify('已插入文本框，直接输入即可');
+  }, [applyManualSelectionState, notify, refreshLayerItems]);
+
   const handleEditSelectedText = useCallback(() => {
     const editor = editorRef.current;
     const selected = editor?.getSelected();
@@ -2454,17 +2750,8 @@ export default function App() {
     setContextMenu(null);
     const target = element as HTMLElement;
     editor.select(selected);
-    (editor as unknown as { runCommand?: (id: string, options?: unknown) => void }).runCommand?.('core:component-edit', {
-      component: selected
-    });
-    target.dispatchEvent(
-      new MouseEvent('dblclick', {
-        bubbles: true,
-        cancelable: true,
-        view: target.ownerDocument.defaultView
-      })
-    );
-    target.focus({ preventScroll: true });
+    selected.trigger('active');
+    window.setTimeout(() => target.focus({ preventScroll: true }), 0);
   }, []);
 
   const handleMoveSelectionLayer = useCallback((placement: 'front' | 'back') => {
@@ -2515,6 +2802,46 @@ export default function App() {
     setDirty(true);
   }, []);
 
+  const applyStoredTextSelectionStyles = useCallback(
+    (styles: Record<string, string>): boolean => {
+      const editor = editorRef.current;
+      const snapshot = textSelectionRef.current;
+      const selected = editor?.getSelected();
+      if (
+        !editor ||
+        !snapshot ||
+        !selected ||
+        componentKey(selected) !== componentKey(snapshot.component) ||
+        !snapshot.root.isConnected
+      ) {
+        return false;
+      }
+
+      const doc = snapshot.root.ownerDocument;
+      const selection = doc.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(snapshot.range.cloneRange());
+      const wasEditable = snapshot.root.isContentEditable;
+      const nextRange = applyStylesToTextRange(snapshot.range.cloneRange(), snapshot.root, styles);
+      if (!nextRange) return false;
+
+      textSelectionRef.current = { ...snapshot, range: nextRange };
+      if (wasEditable) {
+        const EventConstructor = doc.defaultView?.Event || Event;
+        snapshot.root.dispatchEvent(new EventConstructor('input', { bubbles: true }));
+      } else {
+        snapshot.component.components(snapshot.root.innerHTML);
+        textSelectionRef.current = null;
+      }
+
+      setSelectedSummary(summarizeSelected(editor));
+      refreshLayerItems();
+      setDirty(true);
+      return true;
+    },
+    [refreshLayerItems]
+  );
+
   const applySelectedStyles = useCallback((styles: Record<string, string>) => {
     const editor = editorRef.current;
     const selected = getCurrentSelection(editor);
@@ -2540,9 +2867,11 @@ export default function App() {
 
   const handleQuickStyleChange = useCallback(
     (property: string, value: string) => {
-      applySelectedStyles({ [property]: normalizeCssValue(property, value) });
+      const normalizedValue = normalizeCssValue(property, value);
+      if (INLINE_TEXT_STYLE_PROPERTIES.has(property) && applyStoredTextSelectionStyles({ [property]: normalizedValue })) return;
+      applySelectedStyles({ [property]: normalizedValue });
     },
-    [applySelectedStyles]
+    [applySelectedStyles, applyStoredTextSelectionStyles]
   );
 
   const handleContextFontSizeStep = useCallback(
@@ -2554,9 +2883,9 @@ export default function App() {
       const style = selected.getStyle();
       const currentSize = cssNumber(stringStyleValue(style['font-size']) || contextMenu?.summary.fontSize || selectedSummary?.fontSize, 24);
       const nextSize = Math.max(8, Math.min(220, Math.round(currentSize + delta)));
-      applySelectedStyles({ 'font-size': `${nextSize}px` });
+      handleQuickStyleChange('font-size', `${nextSize}px`);
     },
-    [applySelectedStyles, contextMenu?.summary.fontSize, selectedSummary?.fontSize]
+    [contextMenu?.summary.fontSize, handleQuickStyleChange, selectedSummary?.fontSize]
   );
 
   const handleToggleTextStyle = useCallback(
@@ -2564,6 +2893,20 @@ export default function App() {
       const editor = editorRef.current;
       const selected = editor?.getSelected();
       if (!editor || !selected) return;
+
+      const snapshot = textSelectionRef.current;
+      if (snapshot && componentKey(snapshot.component) === componentKey(selected)) {
+        if (styleName === 'bold') {
+          const current = selectedTextComputedStyle(snapshot, 'font-weight');
+          if (applyStoredTextSelectionStyles({ 'font-weight': isBoldValue(current) ? '400' : '700' })) return;
+        }
+        if (styleName === 'italic') {
+          const current = selectedTextComputedStyle(snapshot, 'font-style');
+          if (applyStoredTextSelectionStyles({ 'font-style': current === 'italic' ? 'normal' : 'italic' })) return;
+        }
+        const current = selectedTextComputedStyle(snapshot, 'text-decoration-line');
+        if (applyStoredTextSelectionStyles({ 'text-decoration': current.includes('underline') ? 'none' : 'underline' })) return;
+      }
 
       const style = selected.getStyle();
       if (styleName === 'bold') {
@@ -2577,7 +2920,7 @@ export default function App() {
       const current = stringStyleValue(style['text-decoration']) || '';
       applySelectedStyles({ 'text-decoration': current.includes('underline') ? 'none' : 'underline' });
     },
-    [applySelectedStyles]
+    [applySelectedStyles, applyStoredTextSelectionStyles]
   );
 
   const openCodeView = useCallback(() => {
@@ -2585,22 +2928,28 @@ export default function App() {
     if (!editor) return;
     flushEditorState(editor);
     setCodeHtml(formatLooseHtml(editor.getHtml()));
-    setCodeCss(editor.getCss() ?? '');
+    const currentSlide =
+      slidesRef.current.find((slide) => slide.id === currentSlideIdRef.current) ?? slidesRef.current[0];
+    setCodeCss(currentSlide?.css ?? '');
     setCodeOpen(true);
   }, []);
 
   const applyCodeView = useCallback(() => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    loadingSlideRef.current = true;
-    editor.setComponents(codeHtml);
-    editor.setStyle(codeCss);
-    loadingSlideRef.current = false;
-    commitCurrentSlide(true);
+    const currentId = currentSlideIdRef.current;
+    if (!editorRef.current || !currentId) return;
+    let target: SlideModel | undefined;
+    const nextSlides = slidesRef.current.map((slide) => {
+      if (slide.id !== currentId) return slide;
+      target = normalizeSlide({ ...slide, components: codeHtml, css: codeCss });
+      return target;
+    });
+    if (!target) return;
+    slidesRef.current = nextSlides;
+    setSlides(nextSlides);
+    loadSlideIntoEditor(target);
     setDirty(true);
     setCodeOpen(false);
-    window.setTimeout(syncCanvasHelpers, 0);
-  }, [codeCss, codeHtml, commitCurrentSlide, syncCanvasHelpers]);
+  }, [codeCss, codeHtml, loadSlideIntoEditor]);
 
   const currentSlideIndex = slides.findIndex((slide) => slide.id === currentSlideId);
   const selectedSlide = slides[currentSlideIndex] ?? slides[0];
@@ -2863,6 +3212,9 @@ export default function App() {
             </ToolbarButton>
           </div>
           <div className="toolbar-group" aria-label="编辑">
+            <ToolbarButton label="文本" title="插入文本框" onClick={handleInsertTextBox}>
+              <Type size={16} />
+            </ToolbarButton>
             <ToolbarButton label="撤销" onClick={handleUndo}>
               <Undo2 size={16} />
             </ToolbarButton>
@@ -2882,6 +3234,11 @@ export default function App() {
             </ToolbarButton>
             <ToolbarButton label="导出" onClick={handleExport}>
               <Download size={16} />
+            </ToolbarButton>
+          </div>
+          <div className="toolbar-group" aria-label="应用">
+            <ToolbarButton label="退出" title="退出应用" onClick={handleQuitApplication}>
+              <X size={16} />
             </ToolbarButton>
           </div>
         </nav>
@@ -2982,7 +3339,7 @@ export default function App() {
             </div>
             <div className="canvas-tools" onMouseDown={(event) => event.preventDefault()}>
               <span className={`selection-count${selectedCount ? ' has-selection' : ''}`}>
-                {selectedCount ? `已选 ${selectedCount}` : '编辑画布'}
+                {textEditing ? '正在编辑文字' : selectedCount ? `已选 ${selectedCount}` : '编辑画布'}
               </span>
               <div className={`selection-tools${selectedCount ? '' : ' is-hidden'}`} aria-label="对象排列">
                 <button type="button" title="左对齐" disabled={!selectedCount} onClick={() => handleAlignSelection('left')}>
@@ -3477,9 +3834,13 @@ export default function App() {
           role="menu"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onClick={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
           onContextMenu={(event) => event.preventDefault()}
         >
-          <strong>{contextMenu.label}</strong>
+          <div className="context-menu-heading">
+            <strong>{contextMenu.label}</strong>
+            {contextMenu.hasTextSelection && <span>仅修改所选文字</span>}
+          </div>
           <div className="context-style-panel" aria-label="快捷格式">
             <div className="context-control-row">
               <label className="context-select">
