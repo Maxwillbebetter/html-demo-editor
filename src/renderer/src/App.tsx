@@ -156,6 +156,7 @@ interface ContextMenuState {
   isImage: boolean;
   canEditText: boolean;
   hasTextSelection: boolean;
+  textSelectionComponentKey?: string;
   summary: SelectedSummary;
 }
 
@@ -163,6 +164,8 @@ interface TextSelectionSnapshot {
   range: Range;
   root: HTMLElement;
   component: Component;
+  startTextOffset: number;
+  endTextOffset: number;
 }
 
 type GrapesRichTextEditor = Parameters<RichTextEditorAction['result']>[0];
@@ -684,6 +687,67 @@ function isTextLikeComponent(component: Component | null): boolean {
   return ['a', 'button', 'figcaption', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'p', 'span', 'td', 'th'].includes(tagName);
 }
 
+function textOffsetWithinRoot(root: HTMLElement, container: Node, offset: number): number {
+  const prefix = root.ownerDocument.createRange();
+  prefix.selectNodeContents(root);
+  try {
+    prefix.setEnd(container, offset);
+    return prefix.toString().length;
+  } catch {
+    return 0;
+  }
+}
+
+function rangeFromTextOffsets(root: HTMLElement, startOffset: number, endOffset: number): Range | null {
+  const doc = root.ownerDocument;
+  const textLength = root.textContent?.length || 0;
+  const start = Math.max(0, Math.min(startOffset, textLength));
+  const end = Math.max(start, Math.min(endOffset, textLength));
+  const walker = doc.createTreeWalker(root, 4);
+  let position = 0;
+  let startNode: Text | null = null;
+  let endNode: Text | null = null;
+  let startNodeOffset = 0;
+  let endNodeOffset = 0;
+  let current = walker.nextNode() as Text | null;
+
+  while (current) {
+    const nextPosition = position + current.data.length;
+    if (!startNode && start <= nextPosition) {
+      startNode = current;
+      startNodeOffset = Math.max(0, start - position);
+    }
+    if (!endNode && end <= nextPosition) {
+      endNode = current;
+      endNodeOffset = Math.max(0, end - position);
+    }
+    if (startNode && endNode) break;
+    position = nextPosition;
+    current = walker.nextNode() as Text | null;
+  }
+
+  if (!startNode || !endNode) return null;
+  const range = doc.createRange();
+  range.setStart(startNode, Math.min(startNodeOffset, startNode.data.length));
+  range.setEnd(endNode, Math.min(endNodeOffset, endNode.data.length));
+  return range.collapsed ? null : range;
+}
+
+function resolveTextSelectionSnapshot(snapshot: TextSelectionSnapshot): TextSelectionSnapshot | null {
+  const componentElement = snapshot.component.getEl?.() as HTMLElement | undefined;
+  const root = componentElement?.isConnected ? componentElement : snapshot.root;
+  if (!root?.isConnected) return null;
+
+  let range = snapshot.range.cloneRange();
+  if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) {
+    const restored = rangeFromTextOffsets(root, snapshot.startTextOffset, snapshot.endTextOffset);
+    if (!restored) return null;
+    range = restored;
+  }
+
+  return { ...snapshot, root, range };
+}
+
 function captureTextSelection(editor: Editor): TextSelectionSnapshot | null {
   const doc = editor.Canvas.getDocument();
   const selection = doc?.getSelection();
@@ -697,7 +761,13 @@ function captureTextSelection(editor: Editor): TextSelectionSnapshot | null {
 
   const component = getGrapesComponentFromElement(editor, root);
   if (!component || !isTextLikeComponent(component)) return null;
-  return { range: range.cloneRange(), root, component };
+  return {
+    range: range.cloneRange(),
+    root,
+    component,
+    startTextOffset: textOffsetWithinRoot(root, range.startContainer, range.startOffset),
+    endTextOffset: textOffsetWithinRoot(root, range.endContainer, range.endOffset)
+  };
 }
 
 function applyStylesToTextRange(range: Range, root: HTMLElement, styles: Record<string, string>): Range | null {
@@ -723,9 +793,11 @@ function applyStylesToTextRange(range: Range, root: HTMLElement, styles: Record<
 }
 
 function selectedTextComputedStyle(snapshot: TextSelectionSnapshot, property: string): string {
-  const node = snapshot.range.startContainer;
+  const resolved = resolveTextSelectionSnapshot(snapshot);
+  if (!resolved) return '';
+  const node = resolved.range.startContainer;
   const element = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
-  const win = snapshot.root.ownerDocument.defaultView;
+  const win = resolved.root.ownerDocument.defaultView;
   return element && win ? win.getComputedStyle(element).getPropertyValue(property).trim() : '';
 }
 
@@ -1858,13 +1930,15 @@ export default function App() {
             const top = (frameRect?.top ?? 0) + event.clientY * scaleY;
             const summary = summarizeComponent(component);
 
+            const hasTextSelection = Boolean(capturedTextSelection && capturedTextSelection.component === component);
             setContextMenu({
               x: Math.max(8, Math.min(window.innerWidth - 230, left)),
               y: Math.max(8, Math.min(window.innerHeight - 260, top)),
               label: summary.label || '元素',
               isImage: summary.isImage || false,
               canEditText: isTextLikeComponent(component),
-              hasTextSelection: Boolean(capturedTextSelection && capturedTextSelection.component === component),
+              hasTextSelection,
+              textSelectionComponentKey: hasTextSelection ? componentKey(component) : undefined,
               summary
             });
         };
@@ -2807,31 +2881,32 @@ export default function App() {
     (styles: Record<string, string>): boolean => {
       const editor = editorRef.current;
       const snapshot = textSelectionRef.current;
-      const selected = editor?.getSelected();
+      const expectedComponentKey = contextMenu?.textSelectionComponentKey;
       if (
         !editor ||
         !snapshot ||
-        !selected ||
-        componentKey(selected) !== componentKey(snapshot.component) ||
-        !snapshot.root.isConnected
+        !expectedComponentKey ||
+        componentKey(snapshot.component) !== expectedComponentKey
       ) {
         return false;
       }
 
-      const doc = snapshot.root.ownerDocument;
+      const resolved = resolveTextSelectionSnapshot(snapshot);
+      if (!resolved) return false;
+      const doc = resolved.root.ownerDocument;
       const selection = doc.getSelection();
       selection?.removeAllRanges();
-      selection?.addRange(snapshot.range.cloneRange());
-      const wasEditable = snapshot.root.isContentEditable;
-      const nextRange = applyStylesToTextRange(snapshot.range.cloneRange(), snapshot.root, styles);
+      selection?.addRange(resolved.range.cloneRange());
+      const wasEditable = resolved.root.isContentEditable;
+      const nextRange = applyStylesToTextRange(resolved.range.cloneRange(), resolved.root, styles);
       if (!nextRange) return false;
 
-      textSelectionRef.current = { ...snapshot, range: nextRange };
+      textSelectionRef.current = { ...resolved, range: nextRange };
       if (wasEditable) {
         const EventConstructor = doc.defaultView?.Event || Event;
-        snapshot.root.dispatchEvent(new EventConstructor('input', { bubbles: true }));
+        resolved.root.dispatchEvent(new EventConstructor('input', { bubbles: true }));
       } else {
-        snapshot.component.components(snapshot.root.innerHTML);
+        resolved.component.components(resolved.root.innerHTML);
         textSelectionRef.current = null;
       }
 
@@ -2840,7 +2915,7 @@ export default function App() {
       setDirty(true);
       return true;
     },
-    [refreshLayerItems]
+    [contextMenu?.textSelectionComponentKey, refreshLayerItems]
   );
 
   const applySelectedStyles = useCallback((styles: Record<string, string>) => {
@@ -2892,11 +2967,10 @@ export default function App() {
   const handleToggleTextStyle = useCallback(
     (styleName: 'bold' | 'italic' | 'underline') => {
       const editor = editorRef.current;
-      const selected = editor?.getSelected();
-      if (!editor || !selected) return;
+      if (!editor) return;
 
       const snapshot = textSelectionRef.current;
-      if (snapshot && componentKey(snapshot.component) === componentKey(selected)) {
+      if (snapshot && contextMenu?.textSelectionComponentKey === componentKey(snapshot.component)) {
         if (styleName === 'bold') {
           const current = selectedTextComputedStyle(snapshot, 'font-weight');
           if (applyStoredTextSelectionStyles({ 'font-weight': isBoldValue(current) ? '400' : '700' })) return;
@@ -2909,6 +2983,8 @@ export default function App() {
         if (applyStoredTextSelectionStyles({ 'text-decoration': current.includes('underline') ? 'none' : 'underline' })) return;
       }
 
+      const selected = editor.getSelected();
+      if (!selected) return;
       const style = selected.getStyle();
       if (styleName === 'bold') {
         applySelectedStyles({ 'font-weight': isBoldValue(stringStyleValue(style['font-weight'])) ? '400' : '700' });
@@ -2921,7 +2997,7 @@ export default function App() {
       const current = stringStyleValue(style['text-decoration']) || '';
       applySelectedStyles({ 'text-decoration': current.includes('underline') ? 'none' : 'underline' });
     },
-    [applySelectedStyles, applyStoredTextSelectionStyles]
+    [applySelectedStyles, applyStoredTextSelectionStyles, contextMenu?.textSelectionComponentKey]
   );
 
   const openCodeView = useCallback(() => {
