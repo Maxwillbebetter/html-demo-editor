@@ -292,6 +292,8 @@ app.whenReady().then(async () => {
 	            if (!selectionMenu?.textContent?.includes('仅修改所选文字')) {
 	              failures.push('text context menu should identify a partial text selection');
 	            }
+	            insertedTextBox.dispatchEvent(new frameWindow.Event('input', { bubbles: true }));
+	            await delay(160);
 	            selectionMenu?.querySelector('button[title="加粗"]')?.click();
 	            const partialBoldApplied = await waitUntil(() => {
 	              const currentTextBox = frameDoc.querySelector('[data-html-demo-text-box="true"]');
@@ -300,7 +302,15 @@ app.whenReady().then(async () => {
 	            }, 2000);
 	            const currentTextBox = frameDoc.querySelector('[data-html-demo-text-box="true"]');
 	            if (!partialBoldApplied) {
-	              failures.push('bold should apply only to the selected characters');
+	              failures.push(
+	                'bold should apply only to the selected characters: ' +
+	                  JSON.stringify({
+	                    connected: Boolean(currentTextBox?.isConnected),
+	                    html: currentTextBox?.innerHTML || '',
+	                    style: currentTextBox?.getAttribute('style') || '',
+	                    menuOpen: Boolean(document.querySelector('.context-menu'))
+	                  })
+	              );
 	            }
 	            if (currentTextBox?.style.fontWeight) {
 	              failures.push('partial text formatting must not style the entire text box');
