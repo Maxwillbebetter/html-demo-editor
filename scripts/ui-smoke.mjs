@@ -479,14 +479,24 @@ app.whenReady().then(async () => {
 	      if (!(await waitUntil(() => document.body.innerText.includes('长页 HTML 报告测试')))) {
 	        failures.push('open should load a long HTML document into the editor');
 	      } else {
-	        await waitUntil(() => {
+	        const longLayoutSettled = await waitUntil(() => {
 	          const candidateCanvas = document.querySelector('.gjs-cv-canvas');
 	          const candidateFrame = document.querySelector('.gjs-frame');
+	          const candidateHost = document.querySelector('.editor-host');
 	          const candidateDoc = candidateFrame?.contentDocument;
+	          const candidateFrameRect = candidateFrame?.getBoundingClientRect();
+	          const candidateHostRect = candidateHost?.getBoundingClientRect();
+	          const candidateZoom = Number.parseFloat(document.querySelector('.zoom-value')?.textContent || '100');
 	          return Boolean(
 	            candidateCanvas &&
 	              candidateDoc?.querySelector('.report') &&
-	              candidateCanvas.scrollHeight > candidateCanvas.clientHeight + 4
+	              candidateCanvas.scrollHeight > candidateCanvas.clientHeight + 4 &&
+	              candidateFrameRect &&
+	              candidateHostRect &&
+	              candidateZoom > 10 &&
+	              candidateZoom < 100 &&
+	              candidateFrameRect.width <= candidateHostRect.width + 2 &&
+	              candidateFrameRect.right <= candidateHostRect.right + 2
 	          );
 	        }, 7000);
 	        const longHost = document.querySelector('.editor-host')?.getBoundingClientRect();
@@ -496,8 +506,11 @@ app.whenReady().then(async () => {
 	        const report = longFrameDoc?.querySelector('.report');
 	        const reportStyle = report && longFrameDoc?.defaultView?.getComputedStyle(report);
 	        const longZoom = Number.parseFloat(document.querySelector('.zoom-value')?.textContent || '100');
-	        if (!longHost || !longFrame || longFrame.width > longHost.width + 2 || longFrame.right > longHost.right + 2) {
-	          failures.push('long HTML should fit its full width inside the editor viewport');
+	        if (!longLayoutSettled || !longHost || !longFrame || longFrame.width > longHost.width + 2 || longFrame.right > longHost.right + 2) {
+	          failures.push(
+	            'long HTML should fit its full width inside the editor viewport: ' +
+	              JSON.stringify({ settled: longLayoutSettled, host: longHost, frame: longFrame, zoom: longZoom })
+	          );
 	        }
 	        if (!(longZoom > 10 && longZoom < 100)) failures.push('long fixed-width HTML should be scaled to the editor width');
 	        if (!longCanvas || longCanvas.scrollHeight <= longCanvas.clientHeight + 4) {
