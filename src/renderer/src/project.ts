@@ -17,6 +17,7 @@ export interface ProjectMeta {
   assetBaseUrl?: string;
   sourceName?: string;
   headExtras: string;
+  bodyTemplates: string;
   bodyScripts: string;
   htmlAttributes?: Record<string, string>;
   bodyAttributes?: Record<string, string>;
@@ -452,6 +453,10 @@ function removeScripts(root: ParentNode): void {
   root.querySelectorAll('script').forEach((node) => node.remove());
 }
 
+function removeTemplates(root: ParentNode): void {
+  root.querySelectorAll('template').forEach((node) => node.remove());
+}
+
 function collectHeadExtras(doc: Document): string {
   return Array.from(doc.head.children)
     .filter((node) => {
@@ -476,12 +481,46 @@ function collectScripts(doc: Document): string {
     .join('\n');
 }
 
+function collectBodyTemplates(doc: Document): string {
+  return Array.from(doc.body.querySelectorAll('template'))
+    .filter((node) => !node.hasAttribute('data-htmlppt-runtime'))
+    .map((node) => node.outerHTML)
+    .join('\n');
+}
+
 function collectAttributes(element: Element): Record<string, string> {
   return Array.from(element.attributes).reduce<Record<string, string>>((attributes, attr) => {
     if (attr.name.startsWith('data-htmlppt-')) return attributes;
     attributes[attr.name] = attr.value;
     return attributes;
   }, {});
+}
+
+function resolveImportedDocument(rawHtml: string): { document: Document; fallbackTitle: string } {
+  let document = new DOMParser().parseFromString(rawHtml, 'text/html');
+  const fallbackTitle = document.title?.trim() || '';
+
+  // Some AI/visualization exports use a tiny host page whose only content is
+  // the real document encoded in iframe[srcdoc]. GrapesJS cannot edit that
+  // nested browsing context reliably, so import the embedded document itself.
+  for (let depth = 0; depth < 3; depth += 1) {
+    const bodyChildren = Array.from(document.body.children).filter(
+      (element) => !element.hasAttribute('data-htmlppt-runtime')
+    );
+    if (bodyChildren.length !== 1) break;
+
+    const iframe = bodyChildren[0];
+    if (iframe.tagName.toLowerCase() !== 'iframe') break;
+
+    const srcdoc = iframe.getAttribute('srcdoc')?.trim();
+    if (!srcdoc) break;
+
+    const embedded = new DOMParser().parseFromString(srcdoc, 'text/html');
+    if (!embedded.body.children.length && !embedded.body.textContent?.trim()) break;
+    document = embedded;
+  }
+
+  return { document, fallbackTitle };
 }
 
 function serializeAttributes(attributes: Record<string, string> | undefined, extraClass = ''): string {
@@ -577,6 +616,7 @@ function normalizeSlideNode(node: Element, index: number, sharedCss: string): Sl
   const clone = node.cloneNode(true) as HTMLElement;
   removeRuntimeNodes(clone);
   removeScripts(clone);
+  removeTemplates(clone);
 
   const id = clone.getAttribute('data-slide-id') || uid();
   const name =
@@ -607,6 +647,7 @@ function normalizeBodyAsSingleSlide(doc: Document, sharedCss: string): SlideMode
   const bodyClone = doc.body.cloneNode(true) as HTMLElement;
   removeRuntimeNodes(bodyClone);
   removeScripts(bodyClone);
+  removeTemplates(bodyClone);
 
   const id = uid();
   const name = doc.querySelector('h1,h2,h3')?.textContent?.trim() || '页面 1';
@@ -657,6 +698,7 @@ export function createDefaultProject(): ParsedProject {
     meta: {
       title: '未命名 HTML 演示材料',
       headExtras: '',
+      bodyTemplates: '',
       bodyScripts: '',
       htmlAttributes: { lang: 'zh-CN' },
       documentMode: false
@@ -721,10 +763,12 @@ export function parseHtmlProject(
   baseDir?: string,
   assetBaseUrl?: string
 ): ParsedProject {
-  const doc = new DOMParser().parseFromString(rawHtml, 'text/html');
+  const imported = resolveImportedDocument(rawHtml);
+  const doc = imported.document;
   removeRuntimeNodes(doc);
 
-  const title = doc.title?.trim() || sourceName?.replace(/\.(html|htm)$/i, '') || '导入的 HTML 演示材料';
+  const title =
+    doc.title?.trim() || imported.fallbackTitle || sourceName?.replace(/\.(html|htm)$/i, '') || '导入的 HTML 演示材料';
   const sharedCss = collectStyles(doc);
   const candidates = getSlideCandidates(doc);
   const slides =
@@ -741,6 +785,7 @@ export function parseHtmlProject(
       assetBaseUrl,
       sourceName,
       headExtras: collectHeadExtras(doc),
+      bodyTemplates: collectBodyTemplates(doc),
       bodyScripts: collectScripts(doc),
       htmlAttributes: collectAttributes(doc.documentElement),
       bodyAttributes: collectAttributes(doc.body),
@@ -835,6 +880,7 @@ ${css}
 </head>
 <body ${bodyAttrs}>
 ${body}
+  ${meta.bodyTemplates || ''}
   ${meta.bodyScripts || ''}
 </body>
 </html>`;
@@ -1148,6 +1194,7 @@ ${body}
   </div>
   <div class="presenter-laser-dot" data-presenter-laser data-htmlppt-runtime></div>
   <canvas class="presenter-ink-canvas" data-presenter-ink data-htmlppt-runtime></canvas>
+  ${meta.bodyTemplates || ''}
   ${meta.bodyScripts || ''}
   ${presenterRuntime()}
 </body>

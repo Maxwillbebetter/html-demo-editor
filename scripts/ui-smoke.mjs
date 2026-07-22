@@ -10,6 +10,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const rendererPath = join(root, 'out/renderer/index.html');
 const longFixturePath = join(root, 'fixtures/qa/long-report.html');
 const interactiveFixturePath = join(root, 'fixtures/qa/interactive/index.html');
+const srcdocFixturePath = join(root, 'fixtures/qa/srcdoc-wrapper.html');
+const templateRuntimeFixturePath = join(root, 'fixtures/qa/template-runtime.html');
 const widthArg = process.argv.find((item) => item.startsWith('--width='));
 const heightArg = process.argv.find((item) => item.startsWith('--height='));
 const screenshotArg = process.argv.find((item) => item.startsWith('--screenshot='));
@@ -17,8 +19,12 @@ const uiWidth = Number.parseInt(widthArg?.split('=')[1] || '1600', 10) || 1600;
 const uiHeight = Number.parseInt(heightArg?.split('=')[1] || '1000', 10) || 1000;
 const longFixture = await readFile(longFixturePath, 'utf8');
 const interactiveFixture = await readFile(interactiveFixturePath, 'utf8');
+const srcdocFixture = await readFile(srcdocFixturePath, 'utf8');
+const templateRuntimeFixture = await readFile(templateRuntimeFixturePath, 'utf8');
 const longFixtureBase64 = Buffer.from(longFixture, 'utf8').toString('base64');
 const interactiveFixtureBase64 = Buffer.from(interactiveFixture, 'utf8').toString('base64');
+const srcdocFixtureBase64 = Buffer.from(srcdocFixture, 'utf8').toString('base64');
+const templateRuntimeFixtureBase64 = Buffer.from(templateRuntimeFixture, 'utf8').toString('base64');
 
 if (!existsSync(rendererPath)) {
   throw new Error('Run npm run build before npm run test:ui');
@@ -154,13 +160,26 @@ app.whenReady().then(async () => {
 	          filePath: ${JSON.stringify(interactiveFixturePath)},
 	          baseDir: ${JSON.stringify(dirname(interactiveFixturePath))},
 	          assetBaseUrl: 'html-demo-local://fixture/'
-	        }
+	        },
+		        srcdoc: {
+		          html: decodeFixture(${JSON.stringify(srcdocFixtureBase64)}),
+		          name: 'srcdoc-wrapper.html',
+		          filePath: ${JSON.stringify(srcdocFixturePath)},
+		          baseDir: ${JSON.stringify(dirname(srcdocFixturePath))}
+		        },
+		        templateRuntime: {
+		          html: decodeFixture(${JSON.stringify(templateRuntimeFixtureBase64)}),
+		          name: 'template-runtime.html',
+		          filePath: ${JSON.stringify(templateRuntimeFixturePath)},
+		          baseDir: ${JSON.stringify(dirname(templateRuntimeFixturePath))}
+		        }
 	      };
 	      const desktopState = {
 	        fixtureMode: 'long',
 	        dropPath: ${JSON.stringify(interactiveFixturePath)},
 	        saved: null,
-	        presented: null
+	        presented: null,
+	        quitRequested: false
 	      };
 	      window.confirm = () => true;
 	      window.desktopBridge = {
@@ -185,13 +204,25 @@ app.whenReady().then(async () => {
 	        selectImage: async () => null,
 	        presentProject: async (payload) => {
 	          desktopState.presented = payload;
+	        },
+	        quitApplication: async () => {
+	          desktopState.quitRequested = true;
 	        }
 	      };
 
       if (!hasText('HTML Demo Editor')) failures.push('brand missing');
-      ['新建', '打开', '保存', '预览', '演示', '导出'].forEach((label) => {
+      ['新建', '打开', '保存', '预览', '演示', '导出', '退出'].forEach((label) => {
         if (!hasText(label) && !hasTitle(label)) failures.push('toolbar missing ' + label);
       });
+	      if (!hasTitle('插入文本框')) failures.push('toolbar should expose an explicit insert text box action');
+	      const quitButton = document.querySelector('button[title="退出应用"]');
+	      if (!quitButton) {
+	        failures.push('main toolbar should expose an explicit application exit button');
+	      } else {
+	        quitButton.click();
+	        await delay(40);
+	        if (!desktopState.quitRequested) failures.push('application exit button should call the desktop bridge');
+	      }
       ['页面', '组件', '样式', '图层'].forEach((label) => {
         if (!hasText(label)) failures.push('pane tab missing ' + label);
       });
@@ -224,6 +255,62 @@ app.whenReady().then(async () => {
       if (!frameDoc || !frameWindow || !contextTarget) {
         failures.push('canvas frame content missing for context menu check');
       } else {
+	        const insertTextButton = document.querySelector('button[title="插入文本框"]');
+	        insertTextButton?.click();
+	        await waitUntil(() => Boolean(frameDoc.querySelector('[data-html-demo-text-box="true"]')));
+	        const insertedTextBox = frameDoc.querySelector('[data-html-demo-text-box="true"]');
+	        if (!insertedTextBox) {
+	          failures.push('insert text action should add a text box to the current canvas');
+	        } else {
+	          await waitUntil(() => insertedTextBox.isContentEditable);
+	          if (!insertedTextBox.isContentEditable) {
+	            failures.push('new text box should immediately enter text editing mode');
+	          } else {
+	            insertedTextBox.textContent = '局部文字格式测试';
+	            insertedTextBox.dispatchEvent(new frameWindow.Event('input', { bubbles: true }));
+	            const textNode = insertedTextBox.firstChild;
+	            const range = frameDoc.createRange();
+	            range.setStart(textNode, 0);
+	            range.setEnd(textNode, 2);
+	            const textSelection = frameDoc.getSelection();
+	            textSelection.removeAllRanges();
+	            textSelection.addRange(range);
+	            frameDoc.dispatchEvent(new frameWindow.Event('selectionchange'));
+	            insertedTextBox.dispatchEvent(new frameWindow.MouseEvent('mouseup', { bubbles: true, view: frameWindow }));
+	            insertedTextBox.dispatchEvent(
+	              new frameWindow.MouseEvent('contextmenu', {
+	                bubbles: true,
+	                cancelable: true,
+	                view: frameWindow,
+	                clientX: 64,
+	                clientY: 64
+	              })
+	            );
+	            await delay(100);
+	            const selectionMenu = document.querySelector('.context-menu');
+	            if (!selectionMenu?.textContent?.includes('仅修改所选文字')) {
+	              failures.push('text context menu should identify a partial text selection');
+	            }
+	            selectionMenu?.querySelector('button[title="加粗"]')?.click();
+	            await delay(100);
+	            const partialBold = insertedTextBox.querySelector('span[style*="font-weight"]');
+	            if (!partialBold || partialBold.textContent !== '局部') {
+	              failures.push('bold should apply only to the selected characters');
+	            }
+	            if (insertedTextBox.style.fontWeight) {
+	              failures.push('partial text formatting must not style the entire text box');
+	            }
+	            if (
+	              !document.querySelector('.gjs-rte-toolbar select[aria-label="局部字体"]') ||
+	              !document.querySelector('.gjs-rte-toolbar select[aria-label="局部字号"]')
+	            ) {
+	              failures.push('rich text toolbar should expose partial font and size controls');
+	            }
+	            frameDoc.body.dispatchEvent(new frameWindow.MouseEvent('mousedown', { bubbles: true, view: frameWindow }));
+	            frameDoc.body.dispatchEvent(new frameWindow.MouseEvent('mouseup', { bubbles: true, view: frameWindow }));
+	          }
+	        }
+
         contextTarget.dispatchEvent(
           new frameWindow.MouseEvent('contextmenu', {
             bubbles: true,
@@ -407,6 +494,113 @@ app.whenReady().then(async () => {
 	        if (document.querySelector('.statusbar')?.textContent?.includes('有未保存修改')) {
 	          failures.push('opening an HTML file should not be marked dirty by editor normalization');
 	        }
+	        if (longCanvas) longCanvas.scrollTop = Math.min(420, longCanvas.scrollHeight - longCanvas.clientHeight);
+	      }
+
+	      desktopState.fixtureMode = 'srcdoc';
+	      document.querySelector('button[title="打开"]')?.click();
+	      if (!(await waitUntil(() => document.body.innerText.includes('Embedded srcdoc report')))) {
+	        failures.push('open should recognize a document wrapped in iframe srcdoc');
+	      } else {
+	        await waitUntil(() => {
+	          const candidateDoc = document.querySelector('.gjs-frame')?.contentDocument;
+	          return candidateDoc?.body?.dataset.srcdocScriptLoaded === 'true' && Boolean(candidateDoc.querySelector('#embedded-report'));
+	        }, 7000);
+	        const srcdocCanvas = document.querySelector('.gjs-cv-canvas');
+	        const srcdocFrameDoc = document.querySelector('.gjs-frame')?.contentDocument;
+	        const embeddedReport = srcdocFrameDoc?.querySelector('#embedded-report');
+	        const nestedHeading = srcdocFrameDoc?.querySelector('#nested-heading');
+	        const embeddedStyle = embeddedReport && srcdocFrameDoc?.defaultView?.getComputedStyle(embeddedReport);
+	        const modernColorPanel = srcdocFrameDoc?.querySelector('#embedded-report .panel');
+	        const modernColorStyle = modernColorPanel && srcdocFrameDoc?.defaultView?.getComputedStyle(modernColorPanel);
+	        const preservedSourceCss = srcdocFrameDoc?.querySelector('#html-demo-editor-source-style')?.textContent || '';
+	        const thumbnailSource = document.querySelector('.slide-thumb iframe')?.getAttribute('srcdoc') || '';
+	        if (!embeddedReport) {
+	          failures.push('srcdoc content should appear in the main editable canvas');
+	        }
+	        if (!nestedHeading) {
+	          failures.push('srcdoc fixture should include a nested H3 editing target');
+	        } else {
+	          nestedHeading.dispatchEvent(
+	            new srcdocFrameDoc.defaultView.MouseEvent('dblclick', {
+	              bubbles: true,
+	              cancelable: true,
+	              view: srcdocFrameDoc.defaultView,
+	              clientX: 80,
+	              clientY: 120
+	            })
+	          );
+	          await waitUntil(() => nestedHeading.isContentEditable);
+	          if (!nestedHeading.isContentEditable) {
+	            failures.push('nested H3 elements should enter rich text editing on double click');
+	          }
+	        }
+	        if (srcdocFrameDoc?.querySelector('iframe[srcdoc]')) {
+	          failures.push('srcdoc wrapper should be unwrapped instead of leaving a blank nested iframe');
+	        }
+	        if (srcdocFrameDoc?.body.dataset.srcdocScriptLoaded !== 'true') {
+	          failures.push('srcdoc embedded scripts should run in the editor canvas');
+	        }
+	        if (!embeddedStyle?.backgroundImage.includes('linear-gradient')) {
+	          failures.push('srcdoc embedded styles should render in the editor canvas');
+	        }
+	        if (!preservedSourceCss.includes('color-mix(in srgb')) {
+	          failures.push('editor canvas should inject imported CSS verbatim instead of reparsing it');
+	        }
+	        if (
+	          !modernColorStyle ||
+	          ['rgb(255, 255, 255)', 'rgba(0, 0, 0, 0)'].includes(modernColorStyle.backgroundColor) ||
+	          modernColorStyle.borderTopWidth !== '4px'
+	        ) {
+	          failures.push(
+	            'modern color-mix backgrounds and borders should keep their computed colors: ' +
+	              JSON.stringify({
+	                background: modernColorStyle?.backgroundColor,
+	                borderColor: modernColorStyle?.borderTopColor,
+	                borderWidth: modernColorStyle?.borderTopWidth
+	              })
+	          );
+	        }
+	        if (!srcdocCanvas || srcdocCanvas.scrollHeight <= srcdocCanvas.clientHeight + 4) {
+	          failures.push('long srcdoc content should remain vertically scrollable');
+	        }
+	        if (srcdocCanvas && srcdocCanvas.scrollTop > 2) {
+	          failures.push('opening a new long document should reset the editor to the top');
+	        }
+	        if (
+	          !thumbnailSource.includes('id="embedded-report"') ||
+	          !thumbnailSource.includes('color-mix(in srgb') ||
+	          thumbnailSource.includes('srcdoc=')
+	        ) {
+	          failures.push('srcdoc thumbnail and main canvas should render the same document');
+	        }
+	      }
+
+	      desktopState.fixtureMode = 'templateRuntime';
+	      document.querySelector('button[title="打开"]')?.click();
+	      if (
+	        !(await waitUntil(
+	          () => document.querySelector('.gjs-frame')?.contentDocument?.documentElement?.dataset.templateRuntime === 'ready',
+	          7000
+	        ))
+	      ) {
+	        failures.push('template-backed runtime should initialize in the editor canvas');
+	      } else {
+	        const templateDoc = document.querySelector('.gjs-frame')?.contentDocument;
+	        const sourceTemplate = templateDoc?.querySelector('#runtime-chart-source');
+	        const runtimeChart = templateDoc?.querySelector('[data-template-chart="ready"]');
+	        const fallback = templateDoc?.querySelector('#runtime-fallback');
+	        const runtimeBar = templateDoc?.querySelector('.runtime-bar');
+	        const runtimeBarStyle = runtimeBar && templateDoc?.defaultView?.getComputedStyle(runtimeBar);
+	        if (!(sourceTemplate instanceof templateDoc.defaultView.HTMLTemplateElement) || !sourceTemplate.content.firstElementChild) {
+	          failures.push('editor canvas should preserve complete template contents for source loaders');
+	        }
+	        if (!runtimeChart || !fallback?.hidden) {
+	          failures.push('editor canvas should show the enhanced chart instead of its fallback table');
+	        }
+	        if (runtimeBarStyle?.backgroundColor !== 'rgb(8, 75, 131)') {
+	          failures.push('template-backed chart should preserve its source color styling');
+	        }
 	      }
 
 	      desktopState.fixtureMode = 'interactive';
@@ -515,41 +709,51 @@ app.whenReady().then(async () => {
 `
 );
 
-const child = spawn(electronPath, [mainPath], {
-  cwd: root,
-  stdio: ['ignore', 'pipe', 'pipe']
-});
+async function runElectronUiSmoke() {
+  const child = spawn(electronPath, [mainPath], {
+    cwd: root,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const code = await new Promise((resolveExit) => {
+    child.on('exit', (exitCode) => resolveExit(exitCode ?? 1));
+  });
+  return { code, stdout, stderr };
+}
 
-let stdout = '';
-let stderr = '';
-child.stdout.on('data', (chunk) => {
-  stdout += chunk;
-});
-child.stderr.on('data', (chunk) => {
-  stderr += chunk;
-});
-
-const code = await new Promise((resolveExit) => {
-  child.on('exit', (exitCode) => resolveExit(exitCode ?? 1));
-});
-
-const line = stdout
+let run = await runElectronUiSmoke();
+let line = run.stdout
   .split(/\r?\n/)
   .map((item) => item.trim())
   .find((item) => item.startsWith('UI_SMOKE_RESULT:'));
 
+if (!line && !run.stderr.trim()) {
+  run = await runElectronUiSmoke();
+  line = run.stdout
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .find((item) => item.startsWith('UI_SMOKE_RESULT:'));
+}
+
 if (!line) {
-  console.error(stdout);
-  console.error(stderr);
+  console.error(run.stdout);
+  console.error(run.stderr);
   throw new Error('UI smoke test did not return a result');
 }
 
 const result = JSON.parse(line.slice('UI_SMOKE_RESULT:'.length));
 if (!result.ok) {
-  console.error(stdout);
+  console.error(run.stdout);
   console.error(result.failures.join('\\n'));
   process.exit(1);
 }
 
-if (code !== 0) process.exit(code);
+if (run.code !== 0) process.exit(run.code);
 console.log('UI smoke checks passed.');

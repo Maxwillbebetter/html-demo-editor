@@ -72,6 +72,7 @@ export interface DesktopBridge {
   exportPackage(payload: ExportPayload): Promise<SaveResult | null>;
   selectImage(): Promise<ImageAssetResult | null>;
   presentProject(payload: PresentPayload): Promise<void>;
+  quitApplication(): Promise<void>;
 }
 
 declare global {

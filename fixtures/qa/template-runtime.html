@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN" data-template-runtime="loading">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Template runtime chart</title>
+  <style>
+    body {
+      margin: 0;
+      color: #171717;
+      background: #ffffff;
+      font-family: Arial, sans-serif;
+    }
+    .report {
+      width: min(960px, calc(100% - 48px));
+      margin: 0 auto;
+      padding: 40px 0;
+    }
+    #runtime-reader[aria-hidden="true"] {
+      display: none;
+    }
+    .runtime-chart {
+      display: grid;
+      gap: 14px;
+    }
+    .runtime-bar-row {
+      display: grid;
+      grid-template-columns: 220px 1fr 64px;
+      align-items: center;
+      gap: 12px;
+    }
+    .runtime-bar-track {
+      height: 26px;
+      background: #eef3f8;
+    }
+    .runtime-bar {
+      height: 100%;
+      width: var(--value);
+      background: #084b83;
+    }
+  </style>
+</head>
+<body>
+  <main id="runtime-fallback" class="report">
+    <h1>供给端使用的 AI 工具类别</h1>
+    <table>
+      <tbody>
+        <tr><td>专业内容创作</td><td>82.1%</td></tr>
+        <tr><td>Agent / 自动化</td><td>79.9%</td></tr>
+      </tbody>
+    </table>
+  </main>
+  <div id="runtime-reader" class="report" aria-hidden="true"></div>
+  <template id="runtime-chart-source">
+    <section class="runtime-chart" data-template-chart="ready">
+      <h1>供给端使用的 AI 工具类别</h1>
+      <div class="runtime-bar-row">
+        <span>专业内容创作</span>
+        <div class="runtime-bar-track"><div class="runtime-bar" style="--value: 82.1%"></div></div>
+        <strong>82.1%</strong>
+      </div>
+      <div class="runtime-bar-row">
+        <span>Agent / 自动化</span>
+        <div class="runtime-bar-track"><div class="runtime-bar" style="--value: 79.9%"></div></div>
+        <strong>79.9%</strong>
+      </div>
+    </section>
+  </template>
+  <script>
+    (() => {
+      const source = document.getElementById('runtime-chart-source');
+      const fallback = document.getElementById('runtime-fallback');
+      const reader = document.getElementById('runtime-reader');
+      if (!(source instanceof HTMLTemplateElement) || !source.content.firstElementChild || !fallback || !reader) {
+        document.documentElement.dataset.templateRuntime = 'missing';
+        return;
+      }
+      reader.appendChild(source.content.cloneNode(true));
+      reader.removeAttribute('aria-hidden');
+      fallback.hidden = true;
+      document.documentElement.dataset.templateRuntime = 'ready';
+    })();
+  </script>
+</body>
+</html>
