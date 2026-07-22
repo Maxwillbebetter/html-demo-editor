@@ -1091,6 +1091,7 @@ export default function App() {
   const lastSelectionItemsRef = useRef<ComponentSelectionItem[]>([]);
   const lastSelectedComponentsRef = useRef<Component[]>([]);
   const textSelectionRef = useRef<TextSelectionSnapshot | null>(null);
+  const contextTextSelectionRef = useRef<TextSelectionSnapshot | null>(null);
   const persistedHtmlRef = useRef(initialProjectHtml);
 
   useEffect(() => {
@@ -1903,6 +1904,7 @@ export default function App() {
             markedEvent.__htmlDemoContextHandled = true;
             const capturedTextSelection = captureTextSelection(editor);
             if (capturedTextSelection) textSelectionRef.current = capturedTextSelection;
+            contextTextSelectionRef.current = capturedTextSelection;
             const eventTarget = getClickElement(event.target);
             const component =
               capturedTextSelection && eventTarget && capturedTextSelection.root.contains(eventTarget)
@@ -2880,7 +2882,7 @@ export default function App() {
   const applyStoredTextSelectionStyles = useCallback(
     (styles: Record<string, string>): boolean => {
       const editor = editorRef.current;
-      const snapshot = textSelectionRef.current;
+      const snapshot = contextMenu?.hasTextSelection ? contextTextSelectionRef.current : textSelectionRef.current;
       const expectedComponentKey = contextMenu?.textSelectionComponentKey;
       if (
         !editor ||
@@ -2901,7 +2903,9 @@ export default function App() {
       const nextRange = applyStylesToTextRange(resolved.range.cloneRange(), resolved.root, styles);
       if (!nextRange) return false;
 
-      textSelectionRef.current = { ...resolved, range: nextRange };
+      const nextSnapshot = { ...resolved, range: nextRange };
+      textSelectionRef.current = nextSnapshot;
+      if (contextMenu?.hasTextSelection) contextTextSelectionRef.current = nextSnapshot;
       if (wasEditable) {
         const EventConstructor = doc.defaultView?.Event || Event;
         resolved.root.dispatchEvent(new EventConstructor('input', { bubbles: true }));
@@ -2915,7 +2919,7 @@ export default function App() {
       setDirty(true);
       return true;
     },
-    [contextMenu?.textSelectionComponentKey, refreshLayerItems]
+    [contextMenu?.hasTextSelection, contextMenu?.textSelectionComponentKey, refreshLayerItems]
   );
 
   const applySelectedStyles = useCallback((styles: Record<string, string>) => {
@@ -2944,10 +2948,14 @@ export default function App() {
   const handleQuickStyleChange = useCallback(
     (property: string, value: string) => {
       const normalizedValue = normalizeCssValue(property, value);
+      if (INLINE_TEXT_STYLE_PROPERTIES.has(property) && contextMenu?.hasTextSelection) {
+        if (!applyStoredTextSelectionStyles({ [property]: normalizedValue })) notify('文字选区已变化，请重新选择');
+        return;
+      }
       if (INLINE_TEXT_STYLE_PROPERTIES.has(property) && applyStoredTextSelectionStyles({ [property]: normalizedValue })) return;
       applySelectedStyles({ [property]: normalizedValue });
     },
-    [applySelectedStyles, applyStoredTextSelectionStyles]
+    [applySelectedStyles, applyStoredTextSelectionStyles, contextMenu?.hasTextSelection, notify]
   );
 
   const handleContextFontSizeStep = useCallback(
@@ -2969,18 +2977,27 @@ export default function App() {
       const editor = editorRef.current;
       if (!editor) return;
 
-      const snapshot = textSelectionRef.current;
-      if (snapshot && contextMenu?.textSelectionComponentKey === componentKey(snapshot.component)) {
+      const snapshot = contextMenu?.hasTextSelection ? contextTextSelectionRef.current : textSelectionRef.current;
+      if (contextMenu?.hasTextSelection) {
+        if (!snapshot || contextMenu.textSelectionComponentKey !== componentKey(snapshot.component)) {
+          notify('文字选区已变化，请重新选择');
+          return;
+        }
+
+        let applied = false;
         if (styleName === 'bold') {
           const current = selectedTextComputedStyle(snapshot, 'font-weight');
-          if (applyStoredTextSelectionStyles({ 'font-weight': isBoldValue(current) ? '400' : '700' })) return;
-        }
-        if (styleName === 'italic') {
+          applied = applyStoredTextSelectionStyles({ 'font-weight': isBoldValue(current) ? '400' : '700' });
+        } else if (styleName === 'italic') {
           const current = selectedTextComputedStyle(snapshot, 'font-style');
-          if (applyStoredTextSelectionStyles({ 'font-style': current === 'italic' ? 'normal' : 'italic' })) return;
+          applied = applyStoredTextSelectionStyles({ 'font-style': current === 'italic' ? 'normal' : 'italic' });
+        } else {
+          const current = selectedTextComputedStyle(snapshot, 'text-decoration-line');
+          applied = applyStoredTextSelectionStyles({ 'text-decoration': current.includes('underline') ? 'none' : 'underline' });
         }
-        const current = selectedTextComputedStyle(snapshot, 'text-decoration-line');
-        if (applyStoredTextSelectionStyles({ 'text-decoration': current.includes('underline') ? 'none' : 'underline' })) return;
+
+        if (!applied) notify('文字选区已变化，请重新选择');
+        return;
       }
 
       const selected = editor.getSelected();
@@ -2997,7 +3014,7 @@ export default function App() {
       const current = stringStyleValue(style['text-decoration']) || '';
       applySelectedStyles({ 'text-decoration': current.includes('underline') ? 'none' : 'underline' });
     },
-    [applySelectedStyles, applyStoredTextSelectionStyles, contextMenu?.textSelectionComponentKey]
+    [applySelectedStyles, applyStoredTextSelectionStyles, contextMenu?.hasTextSelection, contextMenu?.textSelectionComponentKey, notify]
   );
 
   const openCodeView = useCallback(() => {
